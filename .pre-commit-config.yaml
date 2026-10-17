@@ -1,0 +1,54 @@
+# Pre-commit hooks — the local mirror of CI. Install once with:
+#   pip install -e ".[dev]" && pre-commit install && pre-commit install --hook-type commit-msg
+# Run against everything with:  pre-commit run --all-files
+minimum_pre_commit_version: "3.7.0"
+default_install_hook_types: [pre-commit, commit-msg]
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: ^(build/|.*\.md$)
+      - id: end-of-file-fixer
+        exclude: ^build/
+      - id: check-yaml
+      - id: check-toml
+      - id: check-json
+      - id: check-added-large-files
+        args: ["--maxkb=512"]
+      - id: check-merge-conflict
+      - id: check-case-conflict
+      - id: mixed-line-ending
+        args: ["--fix=lf"]
+        exclude: ^build/
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.6.9
+    hooks:
+      - id: ruff
+        args: ["--fix"]
+      - id: ruff-format
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.11.2
+    hooks:
+      - id: mypy
+        files: ^(wmoop_tools|tools)/
+        additional_dependencies: ["types-PyYAML>=6.0"]
+
+  - repo: local
+    hooks:
+      # Enforce Conventional Commits on the commit message itself.
+      - id: conventional-commit
+        name: conventional commit message
+        entry: python tools/check_commit_messages.py
+        language: system
+        stages: [commit-msg]
+      # Verify generators are deterministic + emit importable code (slower: pre-push only).
+      - id: check-generated
+        name: generators are deterministic & valid
+        entry: python tools/check_generated.py
+        language: system
+        pass_filenames: false
+        stages: [pre-push]

@@ -4,6 +4,7 @@ Generated code is DATA only (classes, properties, inheritance, enums, roles). Be
 (algorithms such as ``can_drive`` or ``describe``) is deliberately NOT generated — it is
 hand-written as extensions/visitors/strategies (the "generation gap"; see PATTERNS.md).
 """
+
 from __future__ import annotations
 
 import os

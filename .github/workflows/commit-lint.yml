@@ -1,0 +1,31 @@
+name: Commit lint
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  conventional-commits:
+    name: Conventional Commits
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Validate PR title
+        env:
+          # Passed via env (not inline) to avoid shell injection from the title.
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: python tools/check_commit_messages.py --text "$PR_TITLE"
+      - name: Validate commits in the pull request
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git fetch origin "$BASE_REF" --depth=50
+          python tools/check_commit_messages.py --range "origin/$BASE_REF..HEAD"

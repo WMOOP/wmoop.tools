@@ -1,0 +1,52 @@
+name: Bug report
+description: Something in the toolchain (compiler, validator, or a generator) is wrong.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. This repository is the **toolchain** (compiler + generators).
+        Issues about the *model itself* (concepts, roles) belong in
+        [`wmoop.doc`](https://github.com/WMOOP/wmoop.doc).
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: The exact command(s) you ran, ideally with a minimal model.
+      placeholder: |
+        python -m wmoop_tools --model ./model --lang python --out build/py
+      render: shell
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - loader (WML parsing)
+        - compile (validation / invariants)
+        - generator — Python
+        - generator — C#
+        - CLI
+        - other
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version / commit
+      description: Output of `git rev-parse --short HEAD` and your Python version.
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Output / traceback
+      render: shell

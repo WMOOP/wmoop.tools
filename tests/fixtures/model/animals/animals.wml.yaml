@@ -1,0 +1,53 @@
+module:
+  id: wmoop.animals
+  version: 1.0.0
+  title: Animals
+  depends_on:
+    - module: wmoop.base
+
+enumerations:
+  - id: wmoop.animals/Sex
+    name: Sex
+    definition: Biological sex.
+    values:
+      - id: male
+      - id: female
+
+concepts:
+  - id: wmoop.animals/Animal
+    name: Animal
+    kind: abstract
+    extends: wmoop.base/Thing
+    definition: A living organism.
+    properties:
+      - id: wmoop.animals/Animal#legCount
+        name: legCount
+        type: integer
+        definition: Number of legs.
+      - id: wmoop.animals/Animal#mass
+        name: mass
+        unit: kg
+        definition: Body mass.
+
+  - id: wmoop.animals/Mammal
+    name: Mammal
+    kind: abstract
+    extends: wmoop.animals/Animal
+    definition: A warm-blooded, milk-producing animal.
+
+  - id: wmoop.animals/Person
+    name: Person
+    kind: concrete
+    extends: wmoop.animals/Mammal
+    definition: A human being — the subject that can play social roles.
+    properties:
+      - id: wmoop.animals/Person#fullName
+        name: fullName
+        type: string
+        required: true
+      - id: wmoop.animals/Person#sex
+        name: sex
+        type: wmoop.animals/Sex
+      - id: wmoop.animals/Person#dateOfBirth
+        name: dateOfBirth
+        type: date

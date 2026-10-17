@@ -1,0 +1,6 @@
+# Developer toolchain. Installs the package in editable mode together with every
+# linter, type checker, test and security tool used by the local quality gate and CI.
+#   pip install -r requirements-dev.txt
+#
+# Single source of truth is the [project.optional-dependencies].dev table in pyproject.toml.
+-e .[dev]

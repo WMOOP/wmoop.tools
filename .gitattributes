@@ -1,0 +1,15 @@
+# Normalize line endings. The repo is LF-only (ruff enforces LF), so Windows
+# checkouts don't introduce CRLF churn or break `ruff format --check`.
+* text=auto eol=lf
+
+*.py    text eol=lf
+*.pyi   text eol=lf
+*.toml  text eol=lf
+*.cfg   text eol=lf
+*.ini   text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.md    text eol=lf
+*.cs    text eol=lf
+*.json  text eol=lf
+*.sh    text eol=lf

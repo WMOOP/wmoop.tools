@@ -1,0 +1,30 @@
+name: Feature request
+description: Propose a new generator target, validation rule, or toolchain capability.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Reminder: new **model** concepts go in [`wmoop.doc`](https://github.com/WMOOP/wmoop.doc).
+        This form is for the *toolchain* — new targets (Java, C++…), validation rules, CLI features.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / motivation
+      description: What are you trying to do that the toolchain does not yet support?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+    validations:
+      required: true
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope
+      options:
+        - label: This is a new generator target (I understand it must ship with a conformance check).
+        - label: This is a new validation rule / invariant.
+        - label: This is a CLI or developer-experience change.

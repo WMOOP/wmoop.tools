@@ -1,0 +1,19 @@
+# Self-contained WML fixture model for the test suite.
+# Mirrors the structure of the canonical wmoop.doc model but stands alone, so unit
+# tests never need the external documentation repository.
+module:
+  id: wmoop.base
+  version: 1.0.0
+  title: Base concepts
+
+concepts:
+  - id: wmoop.base/Thing
+    name: Thing
+    kind: abstract
+    definition: The root of everything in the world model.
+    properties:
+      - id: wmoop.base/Thing#label
+        name: label
+        type: string
+        required: true
+        definition: A human-readable label.

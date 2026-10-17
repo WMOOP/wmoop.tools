@@ -3,6 +3,7 @@
 Each top-level folder under the model directory is one module; a module may be split
 across several ``*.wml.yaml`` files (e.g. ``transport.wml.yaml`` + ``roles.wml.yaml``).
 """
+
 from __future__ import annotations
 
 import glob
@@ -84,12 +85,14 @@ def load_model(model_dir: str) -> WorldModel:
                     module.id = m.get("id", module.id)
                     module.version = str(m.get("version", "0.0.0"))
                     module.title = m.get("title", "")
-                    module.depends_on = [dep.get("module") for dep in (m.get("depends_on") or []) if isinstance(dep, dict)]
-                for c in (doc.get("concepts") or []):
+                    module.depends_on = [
+                        dep.get("module") for dep in (m.get("depends_on") or []) if isinstance(dep, dict)
+                    ]
+                for c in doc.get("concepts") or []:
                     module.concepts.append(_concept(c, module.id))
-                for r in (doc.get("roles") or []):
+                for r in doc.get("roles") or []:
                     module.roles.append(_role(r, module.id))
-                for e in (doc.get("enumerations") or []):
+                for e in doc.get("enumerations") or []:
                     module.enumerations.append(_enum(e))
         wm.modules[module.id] = module
 

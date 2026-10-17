@@ -1,4 +1,5 @@
 """Validate a loaded :class:`WorldModel` and provide helpers used by generators."""
+
 from __future__ import annotations
 
 from .model import Concept, WorldModel
@@ -33,9 +34,9 @@ def validate(wm: WorldModel) -> WorldModel:
                 continue
             s = state.get(dep)
             if s == "grey":
-                errors.append("module dependency cycle: " + " -> ".join(stack + [dep]))
+                errors.append("module dependency cycle: " + " -> ".join([*stack, dep]))
             elif s is None:
-                dfs(dep, stack + [dep])
+                dfs(dep, [*stack, dep])
         state[node] = "black"
 
     for mid in graph:
@@ -66,7 +67,7 @@ def validate(wm: WorldModel) -> WorldModel:
 def concept_chain(wm: WorldModel, concept: Concept) -> list:
     """Root-first list of ancestors including ``concept`` itself."""
     chain = []
-    cur = concept
+    cur: Concept | None = concept
     while cur:
         chain.append(cur)
         cur = wm.concepts.get(cur.extends) if cur.extends else None
