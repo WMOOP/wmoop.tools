@@ -1,0 +1,20 @@
+module:
+  id: wmoop.society
+  version: 1.0.0
+  title: Society
+  depends_on:
+    - module: wmoop.animals
+
+# Citizen is a ROLE played by a Person (cross-module). This makes Person role-bearing,
+# so the generators attach roles by composition rather than inheritance.
+roles:
+  - id: wmoop.society/Citizen
+    name: Citizen
+    played_by: wmoop.animals/Person
+    context: wmoop.society
+    definition: A person recognised as a member of a state.
+    properties:
+      - id: wmoop.society/Citizen#citizenId
+        name: citizenId
+        type: string
+        required: true

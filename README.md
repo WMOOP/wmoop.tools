@@ -79,6 +79,29 @@ wmoop.tools/
 └── requirements.txt
 ```
 
+## Development
+
+Install the dev toolchain and run the full quality gate:
+
+```bash
+python -m pip install -e ".[dev]"
+nox                      # lint (ruff) + type_check (mypy) + tests (pytest) + generator checks
+```
+
+Individual checks, plus the validate-only mode and the generator self-test:
+
+```bash
+ruff check . && ruff format --check .            # lint + formatting
+mypy                                             # static types
+pytest                                           # unit tests (self-contained fixture model)
+python -m wmoop_tools --model <dir> --check      # validate a model without generating
+python tools/check_generated.py                  # generators are deterministic & emit valid code
+```
+
+Commits and PR titles follow [Conventional Commits](https://www.conventionalcommits.org/); install
+the hooks with `pre-commit install && pre-commit install --hook-type commit-msg`. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for the full gate and what CI enforces.
+
 ## Roadmap
 
 - More targets: Java, C++.
