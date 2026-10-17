@@ -23,6 +23,9 @@ jobs:
           cache: pip
       - run: pip install -e ".[dev]"
       - name: pip-audit (known CVEs in dependencies)
-        run: pip-audit --strict --desc
+        # No --strict: the editable install of this project isn't on PyPI and can't be
+        # audited, and --strict would treat that skip as a failure. Real vulnerabilities
+        # in dependencies still fail this step.
+        run: pip-audit --desc
       - name: bandit (static security analysis)
         run: bandit -r wmoop_tools tools -c pyproject.toml --severity-level medium
