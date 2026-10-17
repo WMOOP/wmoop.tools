@@ -73,6 +73,7 @@ generator targets or validation rules should use a scope, e.g. `feat(java): …`
 ## What CI runs
 
 - **CI** (`.github/workflows/ci.yml`): lint, format, mypy, tests on Python 3.10–3.13 with coverage,
-  generator determinism, a build, and a best-effort conformance run against `wmoop.doc`.
+  generator determinism, a build, a best-effort conformance run against `wmoop.doc`, and a job that
+  generates the C# binding and **compiles it with the .NET SDK**.
 - **Security** (`.github/workflows/security.yml`): `pip-audit` + `bandit`, also weekly.
 - **Commit lint** (`.github/workflows/commit-lint.yml`): Conventional Commits on the PR title and commits.
