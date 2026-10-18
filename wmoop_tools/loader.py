@@ -68,7 +68,12 @@ def load_model(model_dir: str) -> WorldModel:
     if not os.path.isdir(model_dir):
         raise FileNotFoundError(f"Model directory not found: {model_dir}")
 
-    subdirs = sorted(e for e in os.listdir(model_dir) if os.path.isdir(os.path.join(model_dir, e)))
+    # A leading "_" or "." marks a non-module directory (scaffolding like
+    # "_template", or tooling dirs). Skip them so their placeholder YAML never
+    # becomes a module — it would emit uncompilable source (e.g. `class <Concept>`).
+    subdirs = sorted(
+        e for e in os.listdir(model_dir) if os.path.isdir(os.path.join(model_dir, e)) and not e.startswith(("_", "."))
+    )
     for sub in subdirs:
         files = sorted(glob.glob(os.path.join(model_dir, sub, "*.wml.yaml")))
         if not files:
