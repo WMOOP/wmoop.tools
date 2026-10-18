@@ -1,3 +1,7 @@
+<p align="center">
+  <img alt="wmoop.tools" src="brand/wmoop.tools.svg" width="340">
+</p>
+
 # wmoop.tools
 
 **The WMOOP toolchain — the piece that makes every language binding a *generated* artifact.**
