@@ -6,8 +6,9 @@ import filecmp
 
 import pytest
 
-from wmoop_tools.generators.csharp_gen import generate_csharp
+from wmoop_tools.generators.csharp_gen import _ident, generate_csharp
 from wmoop_tools.generators.python_gen import generate_python
+from wmoop_tools.loader import load_model
 
 
 def _files(root):
@@ -87,3 +88,33 @@ def test_csharp_generation_is_deterministic(world_model, tmp_path):
     generate_csharp(world_model, str(d1))
     generate_csharp(world_model, str(d2))
     _assert_identical(d1 / "Wmoop.Generated", d2 / "Wmoop.Generated")
+
+
+def test_csharp_ident_escapes_reserved_keywords():
+    assert _ident("ref") == "@ref"
+    assert _ident("class") == "@class"
+    assert _ident("fullName") == "fullName"  # not a keyword -> unchanged
+
+
+def test_csharp_keyword_property_emits_valid_identifier(tmp_path):
+    # A property whose name is a C# keyword (`ref`) must be emitted as `@ref`
+    # in the constructor signature and body, never as a bare `ref`.
+    model = tmp_path / "model" / "cite"
+    model.mkdir(parents=True)
+    (model / "cite.wml.yaml").write_text(
+        "module:\n  id: wmoop.cite\n  version: 1.0.0\n"
+        "concepts:\n"
+        "  - id: wmoop.cite/Citation\n"
+        "    name: Citation\n"
+        "    kind: concrete\n"
+        "    properties:\n"
+        "      - {id: wmoop.cite/Citation#ref, name: ref, type: string, cardinality: '0..1'}\n",
+        encoding="utf-8",
+    )
+    wm = load_model(str(tmp_path / "model"))
+    out = tmp_path / "cs"
+    generate_csharp(wm, str(out))
+    src = (out / "Wmoop.Generated" / "Cite.cs").read_text(encoding="utf-8")
+    assert "string @ref" in src
+    assert "Ref = @ref;" in src
+    assert "string ref," not in src and "string ref)" not in src

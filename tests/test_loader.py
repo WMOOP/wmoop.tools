@@ -2,9 +2,35 @@
 
 from __future__ import annotations
 
+from wmoop_tools.loader import load_model
+
 
 def test_modules_loaded(world_model):
     assert set(world_model.modules) == {"wmoop.base", "wmoop.animals", "wmoop.society"}
+
+
+def test_underscore_and_dot_dirs_are_skipped(tmp_path):
+    # Real module.
+    real = tmp_path / "widgets"
+    real.mkdir()
+    (real / "widgets.wml.yaml").write_text(
+        "module:\n  id: wmoop.widgets\n  version: 1.0.0\n"
+        "concepts:\n  - {id: wmoop.widgets/Widget, name: Widget, kind: concrete}\n",
+        encoding="utf-8",
+    )
+    # Scaffolding/tooling dirs the loader must ignore: a leading "_" (e.g. the
+    # DOMAIN template, whose placeholder YAML would emit uncompilable source) or ".".
+    for skipped in ("_template", ".hidden"):
+        d = tmp_path / skipped
+        d.mkdir()
+        (d / "x.wml.yaml").write_text(
+            "module:\n  id: wmoop.<id>\n  version: 0.1.0\n"
+            "concepts:\n  - {id: wmoop.<id>/<Concept>, name: <Concept>, kind: abstract}\n",
+            encoding="utf-8",
+        )
+
+    wm = load_model(str(tmp_path))
+    assert set(wm.modules) == {"wmoop.widgets"}
 
 
 def test_module_metadata(world_model):

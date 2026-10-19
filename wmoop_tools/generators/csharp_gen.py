@@ -122,12 +122,102 @@ CSPROJ = """<Project Sdk="Microsoft.NET.Sdk">
 """
 
 
+# Reserved C# keywords cannot be used as bare identifiers (parameter names,
+# argument expressions); a model property such as `ref` must be emitted as `@ref`.
+_CS_KEYWORDS = frozenset(
+    [
+        "abstract",
+        "as",
+        "base",
+        "bool",
+        "break",
+        "byte",
+        "case",
+        "catch",
+        "char",
+        "checked",
+        "class",
+        "const",
+        "continue",
+        "decimal",
+        "default",
+        "delegate",
+        "do",
+        "double",
+        "else",
+        "enum",
+        "event",
+        "explicit",
+        "extern",
+        "false",
+        "finally",
+        "fixed",
+        "float",
+        "for",
+        "foreach",
+        "goto",
+        "if",
+        "implicit",
+        "in",
+        "int",
+        "interface",
+        "internal",
+        "is",
+        "lock",
+        "long",
+        "namespace",
+        "new",
+        "null",
+        "object",
+        "operator",
+        "out",
+        "override",
+        "params",
+        "private",
+        "protected",
+        "public",
+        "readonly",
+        "ref",
+        "return",
+        "sbyte",
+        "sealed",
+        "short",
+        "sizeof",
+        "stackalloc",
+        "static",
+        "string",
+        "struct",
+        "switch",
+        "this",
+        "throw",
+        "true",
+        "try",
+        "typeof",
+        "uint",
+        "ulong",
+        "unchecked",
+        "unsafe",
+        "ushort",
+        "using",
+        "virtual",
+        "void",
+        "volatile",
+        "while",
+    ]
+)
+
+
 def _local(cid: str) -> str:
     return cid.split("/")[-1]
 
 
 def _pascal(s: str) -> str:
     return (s[:1].upper() + s[1:]) if s else s
+
+
+def _ident(name: str) -> str:
+    """Escape a C# reserved keyword so it is a valid identifier."""
+    return "@" + name if name in _CS_KEYWORDS else name
 
 
 def _ns(module) -> str:
@@ -184,14 +274,14 @@ def _emit_concept(wm, c) -> str:
     if role_bearing:
         lines.append("    private readonly RoleContainer _roles;")
 
-    params = "ConceptId id, string name" + "".join(f", {_cs_type(wm, p)} {p.name}" for p in allp)
-    base_args = "id, name" + "".join(f", {p.name}" for p in inh)
+    params = "ConceptId id, string name" + "".join(f", {_cs_type(wm, p)} {_ident(p.name)}" for p in allp)
+    base_args = "id, name" + "".join(f", {_ident(p.name)}" for p in inh)
     lines.append(f"    {ctor_access} {name}({params}) : base({base_args})")
     lines.append("    {")
     if role_bearing:
         lines.append("        _roles = new RoleContainer(this);")
     for p in own:
-        lines.append(f"        {_pascal(p.name)} = {p.name};")
+        lines.append(f"        {_pascal(p.name)} = {_ident(p.name)};")
     lines.append("    }")
 
     for p in own:
@@ -214,11 +304,11 @@ def _emit_role(wm, r) -> str:
     lines.append(f'    public const string WmId = "{r.id}";')
     if r.played_by:
         lines.append(f'    public const string WmPlayedBy = "{r.played_by}";')
-    params = ", ".join(f"{_cs_type(wm, p)} {p.name}" for p in r.properties)
+    params = ", ".join(f"{_cs_type(wm, p)} {_ident(p.name)}" for p in r.properties)
     lines.append(f"    public {name}({params})")
     lines.append("    {")
     for p in r.properties:
-        lines.append(f"        {_pascal(p.name)} = {p.name};")
+        lines.append(f"        {_pascal(p.name)} = {_ident(p.name)};")
     lines.append("    }")
     lines.append("    public override ConceptId RoleType => new ConceptId(WmId);")
     for p in r.properties:
