@@ -46,12 +46,15 @@ role (e.g. `Person`) is emitted as **role-bearing** (composition), so roles atta
 Requires **Python 3.10+** and **PyYAML** (`pip install -r requirements.txt`). Generating C# and
 building it additionally needs the **.NET SDK**.
 
+The canonical model is pinned as the git submodule `external/wmoop.doc`: clone with
+`git clone --recurse-submodules`, or run `git submodule update --init --recursive`.
+
 ```bash
 # Generate the Python binding from the canonical model
-python -m wmoop_tools --model ../wmoop.doc/model --lang python --out build/py
+python -m wmoop_tools --model external/wmoop.doc/model --lang python --out build/py
 
 # Generate the C# binding from the SAME model
-python -m wmoop_tools --model ../wmoop.doc/model --lang csharp --out build/cs
+python -m wmoop_tools --model external/wmoop.doc/model --lang csharp --out build/cs
 ```
 
 (On Windows the launcher is usually `py`.)
@@ -67,6 +70,29 @@ composition.
 python tests/test_conformance.py     # non-zero exit on failure
 ```
 
+## Regenerating a binding repository
+
+A binding repository (`wmoop.net`, `wmoop.py`, ...) pins `external/wmoop.doc` and
+`external/wmoop.tools` as git submodules and commits the generator output under `generated/`.
+[`tools/regen_binding.py`](tools/regen_binding.py) is the only thing that writes it:
+
+1. It validates the model with the validator from the same `wmoop.doc` commit.
+2. It regenerates into an emptied directory, so deleted concepts disappear.
+3. It records the commits it used in `generated/WMOOP_SOURCE.json`.
+
+With `--check` it writes nothing and exits 1 when the committed output differs: the CI drift
+gate. Run it from the binding's root:
+
+```bash
+python external/wmoop.tools/tools/regen_binding.py --lang csharp           # regenerate
+python external/wmoop.tools/tools/regen_binding.py --lang csharp --check   # CI gate
+```
+
+Bindings call the reusable workflow [`.github/workflows/binding.yml`](.github/workflows/binding.yml)
+instead of copying CI: `mode: check` on pull requests (pins on upstream main, drift gate, build,
+tests), and `mode: regen` to move both pins to upstream main and open a PR with the regenerated
+code.
+
 ## Layout
 
 ```
@@ -79,6 +105,8 @@ wmoop.tools/
 │   └── generators/
 │       ├── python_gen.py  # -> idiomatic Python (dataclasses, ABCs, mixin)
 │       └── csharp_gen.py  # -> idiomatic C# (structs, abstract classes, IHasRoles)
+├── tools/regen_binding.py # regenerate / verify a binding repo's generated/ (drift gate)
+├── external/wmoop.doc/    # git submodule: the pinned canonical model
 ├── tests/test_conformance.py
 └── requirements.txt
 ```

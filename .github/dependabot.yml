@@ -20,3 +20,13 @@ updates:
     commit-message:
       prefix: "ci"
     labels: ["dependencies", "ci"]
+
+  # Propose moving the pinned model (external/wmoop.doc) to its latest main; the blocking
+  # conformance job runs on that PR.
+  - package-ecosystem: "gitsubmodule"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "build"
+    labels: ["dependencies"]

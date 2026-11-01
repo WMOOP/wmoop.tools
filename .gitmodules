@@ -1,0 +1,4 @@
+[submodule "doc"]
+	path = external/wmoop.doc
+	url = https://github.com/WMOOP/wmoop.doc.git
+	branch = main

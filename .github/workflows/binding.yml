@@ -1,0 +1,130 @@
+name: WMOOP binding (reusable)
+
+# The one pipeline every binding repo (wmoop.net, wmoop.py, ...) calls. A binding pins
+# external/wmoop.doc (the model) and external/wmoop.tools (this toolchain) as submodules and
+# commits the generator output under `out`.
+#
+#   mode: check  - on PRs/pushes: the pins are on upstream main, the committed output matches
+#                  them exactly (drift gate), then the binding builds and its tests pass.
+#   mode: regen  - on upstream changes: move both pins to upstream main, regenerate, build,
+#                  test, and open (or update) one PR holding the pin bump + regenerated code.
+
+on:
+  workflow_call:
+    inputs:
+      lang:
+        description: "Generator target: python | csharp"
+        required: true
+        type: string
+      out:
+        description: "Committed output directory"
+        type: string
+        default: generated
+      mode:
+        description: "check | regen"
+        type: string
+        default: check
+      dotnet:
+        description: "Install the .NET SDK"
+        type: boolean
+        default: false
+      build:
+        description: "Build command (after generation)"
+        type: string
+        default: ""
+      test:
+        description: "Test command (after the build)"
+        type: string
+        default: ""
+    secrets:
+      app-id:
+        description: "GitHub App that opens the regen PR (mode: regen)"
+        required: false
+      app-private-key:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  binding:
+    runs-on: ubuntu-latest
+    steps:
+      # Direct submodules only: the model pinned inside wmoop.tools serves the toolchain's own
+      # tests; the binding generates from its own external/wmoop.doc.
+      - uses: actions/checkout@v7
+        with:
+          submodules: true
+          fetch-depth: 0 # full history in the submodules too, for the ancestry check
+
+      - name: Move the pins to upstream main
+        if: inputs.mode == 'regen'
+        run: git submodule update --remote external/wmoop.doc external/wmoop.tools
+
+      # The grammar the validator needs, at the commit the (possibly new) wmoop.doc pin records.
+      - name: Check out the grammar pinned by wmoop.doc
+        run: git -C external/wmoop.doc submodule update --init
+
+      - name: Every pin is a commit on upstream main
+        run: |
+          for s in external/wmoop.doc external/wmoop.tools; do
+            git -C "$s" fetch --quiet origin main
+            if ! git -C "$s" merge-base --is-ancestor HEAD FETCH_HEAD; then
+              echo "::error::$s pins a commit that is not on its upstream main"
+              exit 1
+            fi
+          done
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install the model validator and toolchain dependencies
+        run: pip install -r external/wmoop.doc/schema/requirements.txt -r external/wmoop.tools/requirements.txt
+
+      - uses: actions/setup-dotnet@v6
+        if: inputs.dotnet
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Generated code matches the pins (drift gate)
+        if: inputs.mode == 'check'
+        run: python external/wmoop.tools/tools/regen_binding.py --lang "${{ inputs.lang }}" --out "${{ inputs.out }}" --check
+
+      - name: Regenerate
+        if: inputs.mode == 'regen'
+        run: python external/wmoop.tools/tools/regen_binding.py --lang "${{ inputs.lang }}" --out "${{ inputs.out }}"
+
+      - name: Build
+        if: inputs.build != ''
+        run: ${{ inputs.build }}
+
+      - name: Test
+        if: inputs.test != ''
+        run: ${{ inputs.test }}
+
+      # A token from the GitHub App, not GITHUB_TOKEN: a PR opened with GITHUB_TOKEN would not
+      # trigger the binding's own CI.
+      - uses: actions/create-github-app-token@v2
+        id: app-token
+        if: inputs.mode == 'regen'
+        with:
+          app-id: ${{ secrets.app-id }}
+          private-key: ${{ secrets.app-private-key }}
+
+      - uses: peter-evans/create-pull-request@v7
+        if: inputs.mode == 'regen'
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          branch: regen/upstream
+          delete-branch: true
+          add-paths: |
+            external/wmoop.doc
+            external/wmoop.tools
+            ${{ inputs.out }}
+          commit-message: "chore(regen): regenerate from the latest wmoop.doc and wmoop.tools"
+          title: "chore(regen): regenerate from the latest wmoop.doc and wmoop.tools"
+          body: |
+            Automated: both submodule pins moved to upstream `main` and `${{ inputs.out }}/` was
+            regenerated with `wmoop.tools/tools/regen_binding.py`. The exact inputs are in
+            `${{ inputs.out }}/WMOOP_SOURCE.json`. Build and tests passed before this PR was opened.
+          labels: regen

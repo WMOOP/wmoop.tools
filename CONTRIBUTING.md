@@ -30,6 +30,7 @@ and code of conduct live in the documentation repository,
 Every rule enforced in CI can be run locally. Set up the dev toolchain once:
 
 ```bash
+git submodule update --init --recursive     # the pinned model: external/wmoop.doc
 python -m pip install -e ".[dev]"
 pre-commit install --install-hooks          # runs ruff/mypy/hygiene on every commit
 pre-commit install --hook-type commit-msg   # enforces Conventional Commits locally
@@ -53,9 +54,11 @@ nox                      # lint + type_check + tests + generated
 | Security | `nox -s security` | dependency CVEs (`pip-audit`) + `bandit` |
 
 Unit tests use the self-contained fixture model in `tests/fixtures/model`, so they need no
-external repo. The end-to-end `tests/test_conformance.py` additionally needs the canonical model
-from `wmoop.doc`; it **skips** automatically when that is absent, or point it at one with
-`WMOOP_MODEL=/path/to/wmoop.doc/model`.
+external repo. The end-to-end `tests/test_conformance.py` and `tests/test_regen_binding.py` additionally need
+the canonical model, pinned as the `external/wmoop.doc` submodule (the regeneration test also
+needs `pip install -r external/wmoop.doc/schema/requirements.txt`). They **skip** automatically
+when the submodule is not checked out; `WMOOP_MODEL=/path/to/model` overrides the conformance
+model.
 
 ## Commit messages
 
@@ -73,7 +76,8 @@ generator targets or validation rules should use a scope, e.g. `feat(java): …`
 ## What CI runs
 
 - **CI** (`.github/workflows/ci.yml`): lint, format, mypy, tests on Python 3.10–3.13 with coverage,
-  generator determinism, a build, a best-effort conformance run against `wmoop.doc`, and a job that
-  generates the C# binding and **compiles it with the .NET SDK**.
+  generator determinism, a build, a blocking conformance run (plus the binding regeneration
+  script) against the pinned `external/wmoop.doc` model, and a job that generates the C# binding
+  and **compiles it with the .NET SDK**.
 - **Security** (`.github/workflows/security.yml`): `pip-audit` + `bandit`, also weekly.
 - **Commit lint** (`.github/workflows/commit-lint.yml`): Conventional Commits on the PR title and commits.

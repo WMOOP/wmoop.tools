@@ -9,8 +9,9 @@ A generator is only trustworthy if, for a fixed model, it is:
    non-empty for every module.
 
 This script enforces both, for every supported language, without needing the .NET SDK.
-It uses the external canonical model when available and otherwise falls back to the
-self-contained fixture model shipped in ``tests/fixtures/model`` so it always runs.
+It uses the canonical model pinned at ``external/wmoop.doc`` (or a sibling ``../wmoop.doc``)
+when available, and otherwise falls back to the self-contained fixture model shipped in
+``tests/fixtures/model`` so it always runs.
 
     python tools/check_generated.py                 # auto-detect model
     python tools/check_generated.py --model PATH     # explicit model
@@ -44,6 +45,7 @@ def resolve_model(explicit: str | None) -> Path:
         candidates.append(Path(explicit))
     if os.environ.get("WMOOP_MODEL"):
         candidates.append(Path(os.environ["WMOOP_MODEL"]))
+    candidates.append(ROOT / "external" / "wmoop.doc" / "model")  # the pinned submodule
     candidates.append(ROOT.parent / "wmoop.doc" / "model")
     candidates.append(FIXTURE_MODEL)
     for c in candidates:

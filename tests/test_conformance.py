@@ -6,8 +6,9 @@ classes — against the same cross-domain example the hand-written bindings use.
 This is an *integration* test: it needs the canonical model from the external
 ``wmoop.doc`` repository. It is skipped automatically when that model is not present.
 
-Set the model location with the ``WMOOP_MODEL`` environment variable, or check out
-``wmoop.doc`` next to this repository so ``../wmoop.doc/model`` exists.
+The model is the pinned ``external/wmoop.doc`` submodule (``git submodule update --init``).
+``WMOOP_MODEL`` overrides it, and a ``wmoop.doc`` checkout next to this repository
+(``../wmoop.doc/model``) still works.
 
     python tests/test_conformance.py     # standalone: non-zero exit on failure
 """
@@ -31,8 +32,11 @@ def model_dir() -> Path | None:
     env = os.environ.get("WMOOP_MODEL")
     if env and Path(env).is_dir():
         return Path(env).resolve()
-    default = ROOT.parent / "wmoop.doc" / "model"
-    return default.resolve() if default.is_dir() else None
+    # The pinned submodule first; a sibling checkout (../wmoop.doc) still works for local hacking.
+    for default in (ROOT / "external" / "wmoop.doc" / "model", ROOT.parent / "wmoop.doc" / "model"):
+        if default.is_dir() and any(default.iterdir()):
+            return default.resolve()
+    return None
 
 
 def _forget_generated() -> None:
@@ -151,7 +155,7 @@ def test_conformance():
 
     model = model_dir()
     if model is None:
-        pytest.skip("canonical wmoop.doc model not found (set WMOOP_MODEL or check out ../wmoop.doc)")
+        pytest.skip("canonical wmoop.doc model not found (run: git submodule update --init, or set WMOOP_MODEL)")
 
     out = ROOT / "build" / "py"
     results = checks(*build(model, out))
@@ -162,7 +166,7 @@ def test_conformance():
 def _main() -> int:
     model = model_dir()
     if model is None:
-        print("SKIP: canonical wmoop.doc model not found (set WMOOP_MODEL or check out ../wmoop.doc)")
+        print("SKIP: canonical wmoop.doc model not found (run: git submodule update --init, or set WMOOP_MODEL)")
         return 0
     out = ROOT / "build" / "py"
     results = checks(*build(model, out))
