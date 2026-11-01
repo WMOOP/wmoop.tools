@@ -93,6 +93,10 @@ instead of copying CI: `mode: check` on pull requests (pins on upstream main, dr
 tests), and `mode: regen` to move both pins to upstream main and open a PR with the regenerated
 code.
 
+After every green `main` here and in `wmoop.doc`, CI sends `wmoop-upstream-updated` to each
+binding (`repository_dispatch`, through the `wmoop-bot` GitHub App), which then runs
+`mode: regen`; each binding also runs it daily.
+
 ## Layout
 
 ```
