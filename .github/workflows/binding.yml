@@ -111,7 +111,7 @@ jobs:
           app-id: ${{ secrets.app-id }}
           private-key: ${{ secrets.app-private-key }}
 
-      - uses: peter-evans/create-pull-request@v7
+      - uses: peter-evans/create-pull-request@v8
         if: inputs.mode == 'regen'
         with:
           token: ${{ steps.app-token.outputs.token }}
