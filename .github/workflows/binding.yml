@@ -104,7 +104,7 @@ jobs:
 
       # A token from the GitHub App, not GITHUB_TOKEN: a PR opened with GITHUB_TOKEN would not
       # trigger the binding's own CI.
-      - uses: actions/create-github-app-token@v2
+      - uses: actions/create-github-app-token@v3
         id: app-token
         if: inputs.mode == 'regen'
         with:
