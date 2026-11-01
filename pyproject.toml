@@ -59,7 +59,8 @@ exclude = ["tests*", "tools*", "build*"]
 target-version = "py310"
 line-length = 120
 # Generated output and test fixtures are not hand-written and must not be linted.
-extend-exclude = ["build", "tests/fixtures"]
+# external/ holds the pinned wmoop.doc submodule: another repo, linted there.
+extend-exclude = ["build", "tests/fixtures", "external"]
 
 [tool.ruff.lint]
 select = [

@@ -2,7 +2,7 @@
 
 Example::
 
-    python -m wmoop_tools --model ../wmoop.doc/model --lang python --out build/py
+    python -m wmoop_tools --model external/wmoop.doc/model --lang python --out build/py
 """
 
 from __future__ import annotations
