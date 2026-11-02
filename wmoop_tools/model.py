@@ -29,6 +29,16 @@ class Enumeration:
     name: str
     values: list = field(default_factory=list)  # list[EnumValue]
     definition: str | None = None
+    module: str | None = None
+
+
+@dataclass
+class Datatype:
+    id: str
+    name: str
+    base: str | None = None  # a primitive: string | integer | decimal | boolean | date
+    definition: str | None = None
+    module: str | None = None
 
 
 @dataclass
@@ -63,6 +73,7 @@ class Module:
     concepts: list = field(default_factory=list)
     roles: list = field(default_factory=list)
     enumerations: list = field(default_factory=list)
+    datatypes: list = field(default_factory=list)
     dir_name: str = ""
 
 
@@ -72,4 +83,5 @@ class WorldModel:
     concepts: dict = field(default_factory=dict)  # id -> Concept
     roles: dict = field(default_factory=dict)  # id -> Role
     enumerations: dict = field(default_factory=dict)  # id -> Enumeration
+    datatypes: dict = field(default_factory=dict)  # id -> Datatype
     role_bearing: set = field(default_factory=set)  # concept ids that can play roles

@@ -122,9 +122,8 @@ jobs:
         run: pip install -e .
       - name: Generate the C# binding from the pinned model
         run: python -m wmoop_tools --model external/wmoop.doc/model --lang csharp --out build/cs
-      - name: Compile the generated C# (.NET SDK)
-        working-directory: build/cs/Wmoop.Generated
-        run: dotnet build --configuration Release --nologo
+      - name: Compile every generated project, warnings as errors (.NET SDK)
+        run: dotnet build build/cs/Wmoop.Generated.sln --configuration Release --nologo -warnaserror
 
   # After a green main, ask every binding to regenerate: their regen.yml moves the pins and opens
   # a "chore(regen): ..." pull request when the toolchain change alters anything they commit.

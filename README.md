@@ -31,15 +31,27 @@ model/*.wml.yaml  ──load──▶  WorldModel  ──validate──▶  (ok)
 
 ### What is generated — and what is not
 
-Generators emit **data only**: classes, properties, inheritance, enumerations, and roles. **Behaviour
-is never generated** — algorithms like `can_drive`, `describe`, visitors, strategies and
-specifications are hand-written extensions. This is the *generation gap* from
-[PATTERNS.md](https://github.com/WMOOP/wmoop.doc/blob/main/PATTERNS.md): regenerating the model never
-clobbers hand-written behaviour.
+Generators emit **data**:
 
-A nice touch the generator infers from the model: any concept that is the `played_by` target of a
-role (e.g. `Person`) is emitted as **role-bearing** (composition), so roles attach correctly —
-`Person` gets roles, `Driver` is never a subclass of `Person`.
+- classes, properties, inheritance, enumerations and roles;
+- required and `1..*` checks;
+- the role machinery: every entity can play roles by composition, and a role refuses a subject that
+  is not its `played_by` type.
+
+**Behaviour is hand-written**: algorithms like `can_drive` or `describe`, visitors, strategies and
+specifications. This is the *generation gap* from
+[docs/03-architecture.md §2.2](https://github.com/WMOOP/wmoop.doc/blob/main/docs/03-architecture.md):
+regenerating the model never clobbers hand-written behaviour. Each language has its extension point:
+
+| | Generated (in a binding's `generated/`) | Hand-written (in the binding) |
+|---|---|---|
+| **C#** | `Wmoop.Transport/Moped.Gen.cs`: `public partial class Moped : Motorcycle` | another `partial class Moped`, under `$(WmoopSourceRoot)/Wmoop.Transport/` |
+| **Python** | `wmoop/transport.py`: `class Moped(*ext("transport", "Moped"), Motorcycle)` | an optional mixin `class MopedExt` in `wmoop_ext/transport.py` |
+
+Names and packages follow §4.2 / §4.5: one C# project / Python module per model module
+(`Wmoop.Transport`, `wmoop.transport`). Members are `WheelCount` in C# and `wheel_count` in Python.
+Objects are built with C# object initializers over `required` / `init` properties, or Python
+keyword arguments. Optional slots are nullable (`None`), never a default that would read as a fact.
 
 ## Usage
 
@@ -50,11 +62,12 @@ The canonical model is pinned as the git submodule `external/wmoop.doc`: clone w
 `git clone --recurse-submodules`, or run `git submodule update --init --recursive`.
 
 ```bash
-# Generate the Python binding from the canonical model
+# Generate the Python binding from the canonical model: build/py/wmoop/<domain>.py
 python -m wmoop_tools --model external/wmoop.doc/model --lang python --out build/py
 
-# Generate the C# binding from the SAME model
+# Generate the C# binding from the SAME model: build/cs/Wmoop.<Domain>/*.Gen.cs + Wmoop.Generated.sln
 python -m wmoop_tools --model external/wmoop.doc/model --lang csharp --out build/cs
+dotnet build build/cs/Wmoop.Generated.sln
 ```
 
 (On Windows the launcher is usually `py`.)
@@ -106,9 +119,11 @@ wmoop.tools/
 │   ├── model.py           # the in-memory model (dataclasses)
 │   ├── compile.py         # validation + helpers (chains, topo-sort)
 │   ├── cli.py             # `python -m wmoop_tools ...`
-│   └── generators/
-│       ├── python_gen.py  # -> idiomatic Python (dataclasses, ABCs, mixin)
-│       └── csharp_gen.py  # -> idiomatic C# (structs, abstract classes, IHasRoles)
+│   ├── generators/
+│   │   ├── common.py      # module paths, cardinalities, type resolution, the banner
+│   │   ├── python_gen.py  # -> the `wmoop` namespace package, one module per domain
+│   │   └── csharp_gen.py  # -> one Wmoop.<Domain> project per domain, partial classes
+│   └── templates/         # the runtime kernels, emitted verbatim (ConceptId, Quantity, Entity, Role)
 ├── tools/regen_binding.py # regenerate / verify a binding repo's generated/ (drift gate)
 ├── external/wmoop.doc/    # git submodule: the pinned canonical model
 ├── tests/test_conformance.py

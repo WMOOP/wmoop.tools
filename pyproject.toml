@@ -52,6 +52,10 @@ dev = [
 include = ["wmoop_tools*"]
 exclude = ["tests*", "tools*", "build*"]
 
+# The runtime kernels the generators emit verbatim (real, linted source files).
+[tool.setuptools.package-data]
+wmoop_tools = ["templates/*/*"]
+
 # --------------------------------------------------------------------------- #
 # Ruff — linter + formatter (replaces flake8 / isort / black)
 # --------------------------------------------------------------------------- #

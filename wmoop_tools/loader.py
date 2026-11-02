@@ -11,7 +11,7 @@ import os
 
 import yaml
 
-from .model import Concept, Enumeration, EnumValue, Module, Property, Role, WorldModel
+from .model import Concept, Datatype, Enumeration, EnumValue, Module, Property, Role, WorldModel
 
 
 def _prop(d: dict) -> Property:
@@ -62,6 +62,15 @@ def _enum(d: dict) -> Enumeration:
     )
 
 
+def _datatype(d: dict) -> Datatype:
+    return Datatype(
+        id=d["id"],
+        name=d.get("name", d["id"].split("/")[-1]),
+        base=d.get("base"),
+        definition=d.get("definition"),
+    )
+
+
 def load_model(model_dir: str) -> WorldModel:
     wm = WorldModel()
     model_dir = os.path.abspath(model_dir)
@@ -99,6 +108,8 @@ def load_model(model_dir: str) -> WorldModel:
                     module.roles.append(_role(r, module.id))
                 for e in doc.get("enumerations") or []:
                     module.enumerations.append(_enum(e))
+                for d in doc.get("datatypes") or []:
+                    module.datatypes.append(_datatype(d))
         wm.modules[module.id] = module
 
     for m in wm.modules.values():
@@ -109,7 +120,11 @@ def load_model(model_dir: str) -> WorldModel:
             r.module = m.id
             wm.roles[r.id] = r
         for e in m.enumerations:
+            e.module = m.id
             wm.enumerations[e.id] = e
+        for d in m.datatypes:
+            d.module = m.id
+            wm.datatypes[d.id] = d
     for r in wm.roles.values():
         if r.played_by:
             wm.role_bearing.add(r.played_by)

@@ -1,256 +1,253 @@
-"""Generate an idiomatic Python binding from a compiled WorldModel.
+"""Generate the Python binding: one module per WML module, in the ``wmoop`` namespace package.
 
-Generated code is DATA only (classes, properties, inheritance, enums, roles). Behaviour
-(algorithms such as ``can_drive`` or ``describe``) is deliberately NOT generated — it is
-hand-written as extensions/visitors/strategies (the "generation gap"; see PATTERNS.md).
+Layout under ``out_dir`` (a binding's ``generated/``)::
+
+    wmoop/_kernel.py      identity, quantities, roles and the extension hook (from templates/python)
+    wmoop/core.py         the wmoop.core module, plus the kernel's public names
+    wmoop/<domain>.py     one per WML module, e.g. wmoop/transport.py
+
+``wmoop`` has no ``__init__.py`` (a PEP 420 namespace package), so per-domain distributions and a
+binding's hand-written packages can share it.
+
+Names follow docs/03-architecture.md §4.2: ``wmoop.transport.Moped``, ``wheel_count``. A constructor
+takes ``id`` and ``name``, then every property as a keyword argument, so reordering properties in the
+model never breaks a caller. Required slots have no default; an optional slot defaults to ``None``,
+never to a value that would read as a fact.
+
+Behaviour is not generated. Each class lists ``<Name>Ext`` from ``wmoop_ext.<domain>`` first among its
+bases when the binding defines one (the Python generation gap, PATTERNS.md §3.3)::
+
+    # wmoop_ext/transport.py  (hand-written, in the binding)
+    class MopedExt:
+        def describe(self) -> str: ...
+
+A mixin is a plain class: it does not subclass a generated class or define ``__init__``, and it
+imports generated types inside its methods, because the generated module imports it while loading.
 """
 
 from __future__ import annotations
 
+import keyword
 import os
 
-from ..compile import all_properties, inherited_properties, topo_concepts
+from ..compile import ModelError, all_properties, inherited_properties, topo_concepts
+from .common import (
+    CORE_MODULE,
+    TypeRef,
+    banner,
+    cardinality,
+    local,
+    module_path,
+    referenced_modules,
+    resolve_type,
+    snake,
+    template,
+    write,
+)
 
-RUNTIME = '''"""Generated runtime kernel for the WMOOP Python binding. DO NOT EDIT."""
-from __future__ import annotations
-
-from abc import ABC, abstractmethod
-from dataclasses import dataclass
-
-
-@dataclass(frozen=True)
-class ConceptId:
-    value: str
-
-    def __post_init__(self):
-        if not self.value or not self.value.strip():
-            raise ValueError("A ConceptId must be a non-empty identifier.")
-
-    def __str__(self):
-        return self.value
-
-
-def _coerce_id(x):
-    return x if isinstance(x, ConceptId) else ConceptId(x)
+# Members of Entity / Role that a property must not shadow.
+_KERNEL_MEMBERS = frozenset({"id", "name", "roles", "is_a", "add_role", "has_role", "get_role", "role_type", "subject"})
+_PRIMITIVE = {"string": "str", "integer": "int", "decimal": "float", "boolean": "bool", "date": "datetime.date"}
+_KERNEL_IMPORT = "from wmoop._kernel import ConceptId, Entity, Quantity, Role, ext  # noqa: F401"
+_EXT_HINT = "Add behaviour as a mixin <Name>Ext in wmoop_ext.{module} (see wmoop_tools/generators/python_gen.py)."
 
 
-@dataclass(frozen=True)
-class Quantity:
-    value: float
-    unit: str
-
-    def __post_init__(self):
-        if not self.unit or not self.unit.strip():
-            raise ValueError("A Quantity must carry a unit.")
-
-    def __str__(self):
-        return f"{self.value:g} {self.unit}"
+def ident(name: str) -> str:
+    """A valid, collision-free Python name: keywords and kernel members get a trailing underscore."""
+    return name + "_" if keyword.iskeyword(name) or name in _KERNEL_MEMBERS else name
 
 
-class Entity(ABC):
-    def __init__(self, id, name):
-        self._id = _coerce_id(id)
-        self._name = name
-
-    @property
-    def id(self):
-        return self._id
-
-    @property
-    def name(self):
-        return self._name
-
-    def __str__(self):
-        return f"{self._name} [{self._id}]"
+def prop_name(p) -> str:
+    return ident(snake(p.name))
 
 
-class Role(ABC):
-    def __init__(self):
-        self._subject = None
-
-    @property
-    @abstractmethod
-    def role_type(self):
-        ...
-
-    @property
-    def subject(self):
-        return self._subject
-
-    def _attach(self, subject):
-        if self._subject is not None:
-            raise RuntimeError("Role is already attached to a subject.")
-        self._subject = subject
+def dotted(module_id: str) -> str:
+    """``wmoop.transport`` -> ``transport`` (the module's path under ``wmoop``)."""
+    return ".".join(module_path(module_id))
 
 
-class HasRoles:
-    def _init_roles(self):
-        self._roles = []
-
-    @property
-    def roles(self):
-        return tuple(self._roles)
-
-    def add_role(self, role):
-        role._attach(self)
-        self._roles.append(role)
-        return role
-
-    def has_role(self, role_cls):
-        return self.get_role(role_cls) is not None
-
-    def get_role(self, role_cls):
-        for r in self._roles:
-            if isinstance(r, role_cls):
-                return r
-        return None
-'''
+def _alias(module_id: str) -> str:
+    return "_" + "_".join(module_path(module_id))
 
 
-def _local(cid: str) -> str:
-    return cid.split("/")[-1]
+def _doc(*parts: str | None) -> str:
+    """A docstring literal; falls back to repr() when the text could break a triple-quoted string."""
+    text = " ".join(" ".join((p or "").split()) for p in parts if p)
+    if '"' in text or "\\" in text:
+        return repr(text)
+    return f'"""{text}"""'
 
 
-def _doc(text) -> str:
-    return (text or "").strip().replace("\n", " ").replace('"', "'")
+def _type_name(qname: str, module_id: str, here: str) -> str:
+    return local(qname) if module_id == here else f"{_alias(module_id)}.{local(qname)}"
+
+
+def _annotation(t: TypeRef, here: str) -> str:
+    if t.kind == "quantity":
+        return "Quantity"
+    if t.kind in _PRIMITIVE:
+        return _PRIMITIVE[t.kind]
+    return _type_name(t.target, t.module, here)
 
 
 def _default_literal(p) -> str:
     d = p.default
-    if d is None:
-        return "None"
-    if isinstance(d, bool):
-        return "True" if d else "False"
-    if isinstance(d, (int, float)):
+    if isinstance(d, (bool, int, float, str)):
         return repr(d)
-    return repr(d)
+    raise ModelError(f"{p.id}: unsupported default {d!r} (use a boolean, number or string)")
 
 
-def _w(path: str, text: str) -> None:
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    if not text.endswith("\n"):
-        text += "\n"
-    with open(path, "w", encoding="utf-8", newline="\n") as f:
-        f.write(text)
+def _param(wm, p, here: str) -> str:
+    t, card = resolve_type(wm, p), cardinality(p)
+    ann = _annotation(t, here)
+    name = prop_name(p)
+    if card.many:
+        return f"{name}: Iterable[{ann}]" + ("" if card.required else " = ()")
+    if p.default is not None:
+        return f"{name}: {ann} = {_default_literal(p)}"
+    if card.required:
+        return f"{name}: {ann}"
+    return f"{name}: {ann} | None = None"
 
 
-def _emit_concept(wm, c) -> str:
-    name = _local(c.id)
-    base = _local(c.extends) if c.extends else "Entity"
-    role_bearing = c.id in wm.role_bearing
-    bases = base + (", HasRoles" if role_bearing else "")
-
-    allp = all_properties(wm, c)
-    inh = inherited_properties(wm, c)
-    own = c.properties
-
-    lines = [f"class {name}({bases}):"]
-    lines.append(f'    """{name} — {c.id}. {_doc(c.definition)}"""')
-    lines.append(f'    WM_ID = "{c.id}"')
-    lines.append(f'    WM_KIND = "{c.kind}"')
-
-    sig = ""
-    if allp:
-        sig = ", *" + "".join(f", {p.name}={_default_literal(p)}" for p in allp)
-    lines.append(f"    def __init__(self, id, name{sig}):")
-    if c.kind == "abstract":
-        lines.append(f"        if type(self) is {name}:")
-        lines.append(f'            raise TypeError("{name} is abstract and cannot be instantiated directly.")')
-    if base == "Entity":
-        lines.append("        super().__init__(id, name)")
+def _store(wm, p, here: str) -> list[str]:
+    t, card = resolve_type(wm, p), cardinality(p)
+    # The escaped name keeps a model property `name` (stored as `_wm_name_`) off the kernel's `_wm_name`.
+    name = prop_name(p)
+    attr = f"self._wm_{name}"
+    enum = _annotation(t, here) if t.kind == "enum" else None
+    if card.many:
+        items = f"tuple({enum}(v) for v in {name})" if enum else f"tuple({name})"
+        lines = [f"        {attr} = {items}"]
+        if card.required:
+            lines += [f"        if not {attr}:", f'            raise ValueError("{name} needs at least one value.")']
+        return lines
+    lines = []
+    if card.required and p.default is None:
+        lines += [f"        if {name} is None:", f'            raise ValueError("{name} is required.")']
+    if enum and (card.required or p.default is not None):
+        value = f"{enum}({name})"
+    elif enum:
+        value = f"None if {name} is None else {enum}({name})"
     else:
-        inh_args = "".join(f", {p.name}={p.name}" for p in inh)
-        lines.append(f"        super().__init__(id, name{inh_args})")
-    if role_bearing:
-        lines.append("        self._init_roles()")
+        value = name
+    return [*lines, f"        {attr} = {value}"]
+
+
+def _getter(wm, p, here: str) -> list[str]:
+    t, card = resolve_type(wm, p), cardinality(p)
+    ann = _annotation(t, here)
+    if card.many:
+        ann = f"tuple[{ann}, ...]"
+    elif not card.required and p.default is None:
+        ann += " | None"
+    return [
+        "",
+        "    @property",
+        f"    def {prop_name(p)}(self) -> {ann}:",
+        f"        {_doc(p.definition or p.name)}",
+        f"        return self._wm_{prop_name(p)}",
+    ]
+
+
+def _init(wm, here: str, every: list, inherited: list, own: list, *, role: bool) -> list[str]:
+    params = ", ".join(_param(wm, p, here) for p in every)
+    head = "self, *" if role else "self, id: ConceptId | str, name: str, *"
+    lines = ["", f"    def __init__({head}, {params}) -> None:"]
+    if role:
+        lines.append("        super().__init__()")
+    else:
+        passed = "".join(f", {prop_name(p)}={prop_name(p)}" for p in inherited)
+        lines.append(f"        super().__init__(id, name{passed})")
     for p in own:
-        lines.append(f"        self._{p.name} = {p.name}")
-
-    for p in own:
-        lines.append("    @property")
-        lines.append(f"    def {p.name}(self):")
-        lines.append(f"        return self._{p.name}")
-    lines.append("")
-    return "\n".join(lines)
+        lines += _store(wm, p, here)
+    return lines
 
 
-def _emit_role(wm, r) -> str:
-    name = _local(r.id)
-    lines = [f"class {name}(Role):"]
-    lines.append(f'    """{name} role — {r.id}. {_doc(r.definition)}"""')
-    lines.append(f'    WM_ID = "{r.id}"')
-    if r.played_by:
-        lines.append(f'    WM_PLAYED_BY = "{r.played_by}"')
+def _emit_enum(e) -> list[str]:
+    name = local(e.id)
+    lines = [f"class {name}(str, Enum):", f"    {_doc(name, '-', e.id + '.', e.definition)}"]
+    for v in e.values:
+        lines.append(f"    {ident(v.id)} = {v.id!r}")
+    return [*lines, "", ""]
 
-    sig = ""
+
+def _emit_concept(wm, c, here: str) -> list[str]:
+    name = local(c.id)
+    base = _type_name(c.extends, wm.concepts[c.extends].module, here) if c.extends else "Entity"
+    lines = [
+        f"class {name}(*ext({dotted(here)!r}, {name!r}), {base}):",
+        f"    {_doc(name, '-', c.id + '.', c.definition)}",
+        "",
+        f"    WM_ID = {c.id!r}",
+        f"    WM_KIND = {c.kind!r}",
+    ]
+    if c.properties:
+        lines += _init(wm, here, all_properties(wm, c), inherited_properties(wm, c), c.properties, role=False)
+        for p in c.properties:
+            lines += _getter(wm, p, here)
+    return [*lines, "", ""]
+
+
+def _emit_role(wm, r, here: str) -> list[str]:
+    name = local(r.id)
+    lines = [
+        f"class {name}(*ext({dotted(here)!r}, {name!r}), Role):",
+        f"    {_doc(name, 'role -', r.id + '.', r.definition)}",
+        "",
+        f"    WM_ID = {r.id!r}",
+        f"    WM_PLAYED_BY = {(r.played_by or '')!r}",
+    ]
     if r.properties:
-        sig = ", *" + "".join(f", {p.name}={_default_literal(p)}" for p in r.properties)
-    lines.append(f"    def __init__(self{sig}):")
-    lines.append("        super().__init__()")
-    for p in r.properties:
-        lines.append(f"        self._{p.name} = {p.name}")
+        lines += _init(wm, here, r.properties, [], r.properties, role=True)
+        for p in r.properties:
+            lines += _getter(wm, p, here)
+    return [*lines, "", ""]
 
-    lines.append("    @property")
-    lines.append("    def role_type(self):")
-    lines.append("        return ConceptId(self.WM_ID)")
-    for p in r.properties:
-        lines.append("    @property")
-        lines.append(f"    def {p.name}(self):")
-        lines.append(f"        return self._{p.name}")
-    lines.append("")
-    return "\n".join(lines)
+
+def _uses(wm, module, kinds: set[str]) -> bool:
+    for owner in [*module.concepts, *module.roles]:
+        for p in owner.properties:
+            t, card = resolve_type(wm, p), cardinality(p)
+            if t.kind in kinds or ("list" in kinds and card.many):
+                return True
+    return False
+
+
+def _module_source(wm, m) -> str:
+    here = m.id
+    head = [banner("#", m, _EXT_HINT.format(module=dotted(here))), _doc(f"{m.id} {m.version} - {m.title}".strip())]
+    head += ["", "from __future__ import annotations", ""]
+    if _uses(wm, m, {"date"}):
+        head.append("import datetime  # noqa: F401")
+    if _uses(wm, m, {"list"}):
+        head.append("from collections.abc import Iterable")
+    if m.enumerations:
+        head.append("from enum import Enum")
+    head.append("")
+    for other in referenced_modules(wm, m):
+        head.append(f"import wmoop.{dotted(other)} as {_alias(other)}")
+    head.append(_KERNEL_IMPORT)
+    body = ["", ""]
+    for e in m.enumerations:
+        body += _emit_enum(e)
+    for c in topo_concepts(m, wm):
+        body += _emit_concept(wm, c, here)
+    for r in m.roles:
+        body += _emit_role(wm, r, here)
+    return "\n".join(head + body).rstrip() + "\n"
 
 
 def generate_python(wm, out_dir: str) -> list:
-    pkg = os.path.join(out_dir, "wmoop_model")
-    written = []
-
-    rt = os.path.join(pkg, "_runtime.py")
-    _w(rt, RUNTIME)
-    written.append(rt)
-
-    module_files = []
+    nested = sorted(m.id for m in wm.modules.values() if len(module_path(m.id)) > 1)
+    if nested:
+        raise ModelError(f"nested modules are not supported by the Python generator yet: {', '.join(nested)}")
+    pkg = os.path.join(out_dir, "wmoop")
+    written = [write(os.path.join(pkg, "_kernel.py"), banner("#") + "\n" + template("python", "_kernel.py"))]
     for m in wm.modules.values():
-        fname = m.dir_name or m.id.split(".")[-1]
-        module_files.append(fname)
-        body = [f'"""Generated from module {m.id} v{m.version}. DO NOT EDIT — regenerate with wmoop.tools."""']
-        body.append("from __future__ import annotations")
-        if m.enumerations:
-            body.append("from enum import Enum")
-        body.append("from ._runtime import ConceptId, Entity, Quantity, Role, HasRoles  # noqa: F401")
-
-        local_ids = {c.id for c in m.concepts}
-        cross = set()
-        for c in m.concepts:
-            if c.extends and c.extends not in local_ids and c.extends in wm.concepts:
-                other = wm.concepts[c.extends].module
-                cross.add((wm.modules[other].dir_name, _local(c.extends)))
-        for omf, nm in sorted(cross):
-            body.append(f"from .{omf} import {nm}")
-        body.append("")
-
-        for e in m.enumerations:
-            body.append(f"class {_local(e.id)}(str, Enum):")
-            body.append(f'    """{_local(e.id)} — {e.id}."""')
-            if not e.values:
-                body.append("    pass")
-            for v in e.values:
-                body.append(f'    {v.id} = "{v.id}"')
-            body.append("")
-
-        for c in topo_concepts(m, wm):
-            body.append(_emit_concept(wm, c))
-        for r in m.roles:
-            body.append(_emit_role(wm, r))
-
-        path = os.path.join(pkg, fname + ".py")
-        _w(path, "\n".join(body))
-        written.append(path)
-
-    init = ['"""Generated WMOOP model package. DO NOT EDIT — regenerate with wmoop.tools."""']
-    for nm in module_files:
-        init.append(f"from . import {nm} as {nm}  # noqa: F401")
-    ipath = os.path.join(pkg, "__init__.py")
-    _w(ipath, "\n".join(init))
-    written.append(ipath)
+        written.append(write(os.path.join(pkg, dotted(m.id) + ".py"), _module_source(wm, m)))
+    if CORE_MODULE not in wm.modules:
+        core = [banner("#"), repr("wmoop.core - the kernel's public names (the model has no wmoop.core module)."), ""]
+        core.append("from wmoop._kernel import ConceptId, Entity, Quantity, Role  # noqa: F401")
+        written.append(write(os.path.join(pkg, "core.py"), "\n".join(core)))
     return written

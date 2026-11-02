@@ -41,7 +41,7 @@ def model_dir() -> Path | None:
 
 def _forget_generated() -> None:
     for name in list(sys.modules):
-        if name == "wmoop_model" or name.startswith("wmoop_model."):
+        if name.split(".")[0] in ("wmoop", "wmoop_ext"):
             del sys.modules[name]
 
 
@@ -63,11 +63,11 @@ def build(model: Path, out: Path):
         sys.path.insert(0, str(out))
     importlib.invalidate_caches()
 
-    transport = importlib.import_module("wmoop_model.transport")
-    nature = importlib.import_module("wmoop_model.nature")
-    geography = importlib.import_module("wmoop_model.geography")
-    runtime = importlib.import_module("wmoop_model._runtime")
-    return wm, transport, nature, geography, runtime
+    transport = importlib.import_module("wmoop.transport")
+    nature = importlib.import_module("wmoop.nature")
+    geography = importlib.import_module("wmoop.geography")
+    core = importlib.import_module("wmoop.core")
+    return wm, transport, nature, geography, core
 
 
 def _raises(exc, fn) -> bool:
@@ -78,7 +78,7 @@ def _raises(exc, fn) -> bool:
         return True
 
 
-def checks(wm, transport, nature, geography, runtime) -> list[tuple[str, bool]]:
+def checks(wm, transport, nature, geography, core) -> list[tuple[str, bool]]:
     """Return a list of (label, passed) for every conformance assertion."""
     Vehicle, RoadVehicle, Motorcycle, Moped = (
         transport.Vehicle,
@@ -88,7 +88,7 @@ def checks(wm, transport, nature, geography, runtime) -> list[tuple[str, bool]]:
     )
     Driver = transport.Driver
     Person, Human, Animal = nature.Person, nature.Human, nature.Animal
-    Quantity = runtime.Quantity
+    Quantity = core.Quantity
 
     results: list[tuple[str, bool]] = []
     results.append(("WML model loads and validates (>= 3 modules)", len(wm.modules) >= 3))
@@ -99,21 +99,28 @@ def checks(wm, transport, nature, geography, runtime) -> list[tuple[str, bool]]:
         )
     )
     results.append(
-        ("Abstract concepts cannot be instantiated (Vehicle)", _raises(TypeError, lambda: Vehicle("wm:x", "x")))
+        (
+            "Abstract concepts cannot be instantiated (Vehicle)",
+            _raises(TypeError, lambda: Vehicle("wm:x", "x", wheel_count=4)),
+        )
     )
 
     moped = Moped(
         "wm:transport/moped/x",
         "Ciao",
-        wheelCount=2,
-        maxSpeed=Quantity(45, "km/h"),
-        engineDisplacement=Quantity(49, "cc"),
+        wheel_count=2,
+        max_speed=Quantity(45, "km/h"),
+        engine_displacement=Quantity(49, "cm3"),
     )
     results.append(
         (
             "Generated Moped instantiates and carries typed properties",
-            moped.wheelCount == 2 and str(moped.maxSpeed) == "45 km/h" and str(moped.engineDisplacement) == "49 cc",
+            moped.wheel_count == 2 and str(moped.max_speed) == "45 km/h" and str(moped.engine_displacement) == "49 cm3",
         )
+    )
+    results.append(("A default from the model applies (RoadVehicle#roadLegal)", moped.road_legal is True))
+    results.append(
+        ("A required slot cannot be left out (Vehicle#wheelCount)", _raises(TypeError, lambda: Moped("wm:x", "x")))
     )
     results.append(
         (
@@ -135,17 +142,35 @@ def checks(wm, transport, nature, geography, runtime) -> list[tuple[str, bool]]:
         )
     )
 
-    ada = Person("wm:nature/person/ada", "Ada", legCount=2, fullName="Ada Lovelace", dateOfBirth=None)
-    drv = Driver(licenceNumber="RO-AB-1", licenceCategories=["AM", "B"], licenceExpiry=None)
+    ada = Person("wm:nature/person/ada", "Ada", leg_count=2, full_name="Ada Lovelace")
+    drv = Driver(licence_number="RO-AB-1", licence_categories=["AM", "B"])
     ada.add_role(drv)
     results.append(
         (
             "Generated Person can hold a Driver role by composition",
-            ada.has_role(Driver) and ada.get_role(Driver).licenceNumber == "RO-AB-1",
+            ada.has_role(Driver) and ada.get_role(Driver).licence_number == "RO-AB-1",
         )
     )
     results.append(("Role is bound back to its subject", drv.subject is ada))
     results.append(("A Driver is NOT a subclass of Person (role, not inheritance)", not issubclass(Driver, Person)))
+    results.append(
+        (
+            "A role refuses a subject that is not its played_by type (Driver on a Moped)",
+            _raises(TypeError, lambda: moped.add_role(Driver(licence_number="X", licence_categories=["B"]))),
+        )
+    )
+    results.append(
+        (
+            "Absent optional slots read as None, not as a value (Driver#licenceExpiry)",
+            drv.licence_expiry is None and ada.date_of_birth is None,
+        )
+    )
+    results.append(
+        (
+            "Licence categories are the model's enumeration",
+            drv.licence_categories == (transport.LicenceCategory.AM, transport.LicenceCategory.B),
+        )
+    )
     return results
 
 
