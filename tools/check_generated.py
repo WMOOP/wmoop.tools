@@ -5,8 +5,8 @@ A generator is only trustworthy if, for a fixed model, it is:
 
 1. **Deterministic** — running it twice produces byte-identical output. Non-determinism
    (dict ordering, set iteration, timestamps) would make every regeneration a noisy diff.
-2. **Valid** — the emitted Python is importable and the emitted C# is at least present and
-   non-empty for every module.
+2. **Valid** — every emitted Python module imports, and every module has its C# project and
+   sources plus the solution that builds them (CI compiles it with the .NET SDK).
 
 This script enforces both, for every supported language, without needing the .NET SDK.
 It uses the canonical model pinned at ``external/wmoop.doc`` (or a sibling ``../wmoop.doc``)
@@ -71,32 +71,34 @@ def _assert_identical(a: Path, b: Path, label: str) -> list[str]:
     return errors
 
 
-def check_determinism(model, gen, out_name: str, label: str) -> list[str]:
+def check_determinism(model, gen, label: str) -> list[str]:
     with tempfile.TemporaryDirectory() as d1, tempfile.TemporaryDirectory() as d2:
         gen(model, d1)
         gen(model, d2)
-        return _assert_identical(Path(d1) / out_name, Path(d2) / out_name, label)
+        return _assert_identical(Path(d1), Path(d2), label)
+
+
+# Imports every generated module of the `wmoop` namespace package in a clean interpreter.
+_IMPORT_ALL = (
+    "import importlib, pkgutil, wmoop\n"
+    "for m in pkgutil.iter_modules(wmoop.__path__):\n"
+    "    importlib.import_module('wmoop.' + m.name)\n"
+)
 
 
 def check_python_valid(model) -> list[str]:
     errors: list[str] = []
     with tempfile.TemporaryDirectory() as d:
         generate_python(model, d)
-        pkg = Path(d) / "wmoop_model"
+        pkg = Path(d) / "wmoop"
         for py in sorted(pkg.rglob("*.py")):
             try:
                 py_compile.compile(str(py), doraise=True)
             except py_compile.PyCompileError as exc:
                 errors.append(f"python: generated {py.name} does not compile: {exc}")
-        # Import the package in a clean subprocess to prove it actually loads.
-        proc = subprocess.run(
-            [sys.executable, "-c", "import importlib; importlib.import_module('wmoop_model')"],
-            cwd=d,
-            capture_output=True,
-            text=True,
-        )
+        proc = subprocess.run([sys.executable, "-c", _IMPORT_ALL], cwd=d, capture_output=True, text=True)
         if proc.returncode != 0:
-            errors.append("python: generated package failed to import:\n" + proc.stderr.strip())
+            errors.append("python: a generated module failed to import:\n" + proc.stderr.strip())
     return errors
 
 
@@ -104,13 +106,17 @@ def check_csharp_present(model) -> list[str]:
     errors: list[str] = []
     with tempfile.TemporaryDirectory() as d:
         generate_csharp(model, d)
-        proj = Path(d) / "Wmoop.Generated"
-        if not (proj / "Wmoop.Generated.csproj").is_file():
-            errors.append("csharp: missing Wmoop.Generated.csproj")
-        cs_files = list(proj.rglob("*.cs"))
-        if not cs_files:
-            errors.append("csharp: no .cs files were emitted")
-        for cs in cs_files:
+        out = Path(d)
+        if not (out / "Wmoop.Generated.sln").is_file():
+            errors.append("csharp: missing Wmoop.Generated.sln")
+        if not (out / "Wmoop.Core" / "Kernel.Gen.cs").is_file():
+            errors.append("csharp: missing the kernel, Wmoop.Core/Kernel.Gen.cs")
+        for proj in sorted(p for p in out.iterdir() if p.is_dir()):
+            if not (proj / f"{proj.name}.csproj").is_file():
+                errors.append(f"csharp: missing {proj.name}/{proj.name}.csproj")
+            if not list(proj.glob("*.Gen.cs")):
+                errors.append(f"csharp: {proj.name} has no generated sources")
+        for cs in out.rglob("*.cs"):
             if cs.stat().st_size == 0:
                 errors.append(f"csharp: emitted empty file {cs.name}")
     return errors
@@ -127,8 +133,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Model OK: {len(model.modules)} modules, {len(model.concepts)} concepts, {len(model.roles)} roles.")
 
     errors: list[str] = []
-    errors += check_determinism(model, generate_python, "wmoop_model", "python/determinism")
-    errors += check_determinism(model, generate_csharp, "Wmoop.Generated", "csharp/determinism")
+    errors += check_determinism(model, generate_python, "python/determinism")
+    errors += check_determinism(model, generate_csharp, "csharp/determinism")
     errors += check_python_valid(model)
     errors += check_csharp_present(model)
 

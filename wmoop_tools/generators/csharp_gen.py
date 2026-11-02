@@ -1,130 +1,73 @@
-"""Generate an idiomatic C# binding from the SAME compiled WorldModel.
+"""Generate the C# binding: one project per WML module, every type a ``partial`` class.
 
-Proves cross-language parity: one model, many languages. Like the Python generator,
-it emits DATA only (classes, properties, inheritance, enums, roles); behaviour is
-hand-written (the generation gap).
+Layout under ``out_dir`` (a binding's ``generated/``)::
+
+    Wmoop.Generated.sln               every project below, so a new module builds with no manual edit
+    Wmoop.Core/Wmoop.Core.csproj      the kernel (ConceptId, Quantity, Entity, Role) + the wmoop.core module
+    Wmoop.Core/Kernel.Gen.cs          from templates/csharp/Kernel.cs
+    Wmoop.Transport/Wmoop.Transport.csproj
+    Wmoop.Transport/Moped.Gen.cs      one file per type
+    ...
+
+Names follow docs/03-architecture.md §4.2: ``Wmoop.Transport.Moped``, ``WheelCount``. Objects are built
+with object initializers over ``required`` / ``init`` properties, so reordering properties in the model
+never breaks a caller. An optional slot is nullable, never a default that would read as a fact (§6.5).
+
+Behaviour is not generated. Every type is ``partial`` (docs/03-architecture.md §2.2), and each project
+also compiles ``$(WmoopSourceRoot)/<Project>/**/*.cs``, the hand-written halves, when the binding sets
+``WmoopSourceRoot`` (typically in its ``Directory.Build.props``).
 """
 
 from __future__ import annotations
 
 import os
+import uuid
 
-from ..compile import all_properties, inherited_properties, topo_concepts
+from .. import __version__
+from ..compile import ModelError
+from .common import (
+    CORE_MODULE,
+    TypeRef,
+    banner,
+    cardinality,
+    local,
+    module_path,
+    pascal,
+    referenced_modules,
+    resolve_type,
+    template,
+    write,
+)
 
-CS_RUNTIME = r"""// Generated runtime kernel for the WMOOP C# binding. DO NOT EDIT.
-using System;
-using System.Collections.Generic;
-
-namespace Wmoop.Generated.Runtime;
-
-public readonly struct ConceptId : IEquatable<ConceptId>
-{
-    public string Value { get; }
-    public ConceptId(string value)
+_KERNEL = "global::Wmoop.Core"
+_KERNEL_PROJECT = "Wmoop.Core"
+_SOLUTION = "Wmoop.Generated.sln"
+_CSHARP_PROJECT_TYPE = "FAE04EC0-301F-11D3-BF4B-00C04F79EFBC"
+_HINT = "Add behaviour in a partial class under $(WmoopSourceRoot)/{project}/."
+_PRIMITIVE = {"string": "string", "integer": "long", "decimal": "double", "boolean": "bool", "date": "DateOnly"}
+# Members of Entity / Role (and object) that a generated property must not hide.
+_KERNEL_MEMBERS = frozenset(
     {
-        if (string.IsNullOrWhiteSpace(value))
-            throw new ArgumentException("A ConceptId must be non-empty.", nameof(value));
-        Value = value;
+        "Id",
+        "Name",
+        "Roles",
+        "AddRole",
+        "HasRole",
+        "GetRole",
+        "IsA",
+        "RoleType",
+        "PlayedBy",
+        "Subject",
+        "WmId",
+        "WmPlayedBy",
+        "ToString",
+        "Equals",
+        "GetHashCode",
+        "GetType",
     }
-    public static implicit operator ConceptId(string value) => new(value);
-    public bool Equals(ConceptId other) => string.Equals(Value, other.Value, StringComparison.Ordinal);
-    public override bool Equals(object? obj) => obj is ConceptId o && Equals(o);
-    public override int GetHashCode() => StringComparer.Ordinal.GetHashCode(Value ?? string.Empty);
-    public override string ToString() => Value ?? string.Empty;
-    public static bool operator ==(ConceptId a, ConceptId b) => a.Equals(b);
-    public static bool operator !=(ConceptId a, ConceptId b) => !a.Equals(b);
-}
-
-public readonly struct Quantity
-{
-    public double Value { get; }
-    public string Unit { get; }
-    public Quantity(double value, string unit)
-    {
-        if (string.IsNullOrWhiteSpace(unit))
-            throw new ArgumentException("A Quantity must carry a unit.", nameof(unit));
-        Value = value;
-        Unit = unit;
-    }
-    public override string ToString() => $"{Value:0.###} {Unit}";
-}
-
-public abstract class Entity
-{
-    protected Entity(ConceptId id, string name)
-    {
-        Id = id;
-        Name = name ?? throw new ArgumentNullException(nameof(name));
-    }
-    public ConceptId Id { get; }
-    public string Name { get; }
-    public override string ToString() => $"{Name} [{Id}]";
-}
-
-public interface IRole
-{
-    ConceptId RoleType { get; }
-    Entity? Subject { get; }
-}
-
-public abstract class Role : IRole
-{
-    public abstract ConceptId RoleType { get; }
-    public Entity? Subject { get; private set; }
-    internal void AttachTo(Entity subject)
-    {
-        if (Subject is not null)
-            throw new InvalidOperationException("Role is already attached to a subject.");
-        Subject = subject ?? throw new ArgumentNullException(nameof(subject));
-    }
-}
-
-public interface IHasRoles
-{
-    IReadOnlyCollection<IRole> Roles { get; }
-    T AddRole<T>(T role) where T : Role;
-    bool HasRole<T>() where T : class, IRole;
-    T? GetRole<T>() where T : class, IRole;
-}
-
-public sealed class RoleContainer : IHasRoles
-{
-    private readonly Entity _subject;
-    private readonly List<IRole> _roles = new();
-    public RoleContainer(Entity subject) => _subject = subject ?? throw new ArgumentNullException(nameof(subject));
-    public IReadOnlyCollection<IRole> Roles => _roles;
-    public T AddRole<T>(T role) where T : Role
-    {
-        role.AttachTo(_subject);
-        _roles.Add(role);
-        return role;
-    }
-    public bool HasRole<T>() where T : class, IRole => GetRole<T>() is not null;
-    public T? GetRole<T>() where T : class, IRole
-    {
-        foreach (var r in _roles)
-            if (r is T t) return t;
-        return null;
-    }
-}
-"""
-
-CSPROJ = """<Project Sdk="Microsoft.NET.Sdk">
-
-  <!-- Generated by wmoop.tools. DO NOT EDIT generated sources; regenerate instead. -->
-  <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
-    <Nullable>enable</Nullable>
-    <ImplicitUsings>disable</ImplicitUsings>
-  </PropertyGroup>
-
-</Project>
-"""
-
-
-# Reserved C# keywords cannot be used as bare identifiers (parameter names,
-# argument expressions); a model property such as `ref` must be emitted as `@ref`.
-_CS_KEYWORDS = frozenset(
+)
+# Reserved C# keywords cannot be bare identifiers; an enum member `default` is emitted as `@default`.
+_KEYWORDS = frozenset(
     [
         "abstract",
         "as",
@@ -207,158 +150,242 @@ _CS_KEYWORDS = frozenset(
 )
 
 
-def _local(cid: str) -> str:
-    return cid.split("/")[-1]
-
-
-def _pascal(s: str) -> str:
-    return (s[:1].upper() + s[1:]) if s else s
-
-
-def _ident(name: str) -> str:
+def ident(name: str) -> str:
     """Escape a C# reserved keyword so it is a valid identifier."""
-    return "@" + name if name in _CS_KEYWORDS else name
+    return "@" + name if name in _KEYWORDS else name
 
 
-def _ns(module) -> str:
-    return "Wmoop.Generated." + _pascal(module.dir_name or module.id.split(".")[-1])
+def project(module_id: str) -> str:
+    """``wmoop.transport`` -> ``Wmoop.Transport``: the project, assembly and namespace (§4.2)."""
+    return "Wmoop." + ".".join(pascal(s) for s in module_path(module_id))
 
 
-def _scalar_type(wm, p) -> str:
-    if p.unit:
-        return "Quantity"
-    t = p.type or ""
-    if t == "boolean":
-        return "bool"
-    if t == "string":
-        return "string"
-    if t == "date":
-        return "DateOnly"
-    if t in wm.enumerations:
-        return _local(t)
-    if t.endswith(("Count", "Population")):
-        return "int"
-    return "object"
+def member(p, owner: str) -> str:
+    """The C# property name: PascalCase, renamed when it would clash with its class or the kernel."""
+    name = pascal(p.name)
+    return name + "Value" if name == owner or name in _KERNEL_MEMBERS else name
 
 
-def _cs_type(wm, p) -> str:
-    base = _scalar_type(wm, p)
-    return f"IReadOnlyList<{base}>" if "*" in (p.cardinality or "") else base
+def _xml(text: str | None) -> str:
+    return " ".join((text or "").split()).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-def _w(path: str, text: str) -> None:
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    if not text.endswith("\n"):
-        text += "\n"
-    with open(path, "w", encoding="utf-8", newline="\n") as f:
-        f.write(text)
+def _type_name(qname: str, module_id: str, here: str) -> str:
+    name = local(qname)
+    return name if module_id == here else f"global::{project(module_id)}.{name}"
 
 
-def _emit_concept(wm, c) -> str:
-    name = _local(c.id)
-    role_bearing = c.id in wm.role_bearing
-    base = _local(c.extends) if c.extends else "Entity"
-    impl = " : " + base + (", IHasRoles" if role_bearing else "")
+def _item_type(t: TypeRef, here: str) -> str:
+    if t.kind == "quantity":
+        return f"{_KERNEL}.Quantity"
+    if t.kind in _PRIMITIVE:
+        return _PRIMITIVE[t.kind]
+    return _type_name(t.target, t.module, here)
 
-    allp = all_properties(wm, c)
-    inh = inherited_properties(wm, c)
-    own = c.properties
 
-    kw = "abstract class" if c.kind == "abstract" else "class"
-    ctor_access = "protected" if c.kind == "abstract" else "public"
+def _literal(p, t: TypeRef, item: str) -> str:
+    d = p.default
+    if t.kind == "boolean" and isinstance(d, bool):
+        return "true" if d else "false"
+    if t.kind in ("integer", "decimal") and isinstance(d, (int, float)) and not isinstance(d, bool):
+        return repr(d)
+    if t.kind == "string" and isinstance(d, str):
+        return '"' + d.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    if t.kind == "enum" and isinstance(d, str):
+        return f"{item}.{ident(d)}"
+    raise ModelError(f"{p.id}: unsupported default {d!r} for a {t.kind} property")
 
-    new_kw = "new " if c.extends else ""
-    lines = [f"public {kw} {name}{impl}"]
+
+def _property(wm, p, owner: str, here: str) -> list[str]:
+    t, card = resolve_type(wm, p), cardinality(p)
+    item = _item_type(t, here)
+    name = member(p, owner)
+    doc = f"    /// <summary>{_xml(p.definition or p.name)}</summary>"
+    if card.many:
+        typ = f"IReadOnlyList<{item}>"
+        if not card.required:
+            return ["", doc, f"    public {typ} {name} {{ get; init; }} = Array.Empty<{item}>();"]
+        field = f"_wm{name}"
+        return [
+            "",
+            f"    private {typ} {field} = Array.Empty<{item}>();",
+            "",
+            doc,
+            f"    public required {typ} {name}",
+            "    {",
+            f"        get => {field};",
+            f"        init => {field} = value is {{ Count: > 0 }}",
+            "            ? value",
+            f'            : throw new ArgumentException("{name} needs at least one value.", nameof({name}));',
+            "    }",
+        ]
+    if p.default is not None:
+        return ["", doc, f"    public {item} {name} {{ get; init; }} = {_literal(p, t, item)};"]
+    if card.required:
+        return ["", doc, f"    public required {item} {name} {{ get; init; }}"]
+    return ["", doc, f"    public {item}? {name} {{ get; init; }}"]
+
+
+def _head(m) -> list[str]:
+    ns = project(m.id)
+    return [
+        banner("//", m, _HINT.format(project=ns)),
+        "#nullable enable",
+        "using System;",
+        "using System.Collections.Generic;",
+        "",
+        f"namespace {ns};",
+        "",
+    ]
+
+
+def _enum_source(e, m) -> str:
+    name = local(e.id)
+    lines = [*_head(m), f"/// <summary>{name} - <c>{e.id}</c>. {_xml(e.definition)}</summary>", f"public enum {name}"]
     lines.append("{")
-    lines.append(f'    public {new_kw}const string WmId = "{c.id}";')
-    if role_bearing:
-        lines.append("    private readonly RoleContainer _roles;")
-
-    params = "ConceptId id, string name" + "".join(f", {_cs_type(wm, p)} {_ident(p.name)}" for p in allp)
-    base_args = "id, name" + "".join(f", {_ident(p.name)}" for p in inh)
-    lines.append(f"    {ctor_access} {name}({params}) : base({base_args})")
-    lines.append("    {")
-    if role_bearing:
-        lines.append("        _roles = new RoleContainer(this);")
-    for p in own:
-        lines.append(f"        {_pascal(p.name)} = {_ident(p.name)};")
-    lines.append("    }")
-
-    for p in own:
-        lines.append(f"    public {_cs_type(wm, p)} {_pascal(p.name)} {{ get; }}")
-
-    if role_bearing:
-        lines.append("    public IReadOnlyCollection<IRole> Roles => _roles.Roles;")
-        lines.append("    public T AddRole<T>(T role) where T : Role => _roles.AddRole(role);")
-        lines.append("    public bool HasRole<T>() where T : class, IRole => _roles.HasRole<T>();")
-        lines.append("    public T? GetRole<T>() where T : class, IRole => _roles.GetRole<T>();")
-    lines.append("}")
-    lines.append("")
-    return "\n".join(lines)
+    for v in e.values:
+        if v.definition:
+            lines.append(f"    /// <summary>{_xml(v.definition)}</summary>")
+        lines.append(f"    {ident(v.id)},")
+    return "\n".join([*lines, "}"])
 
 
-def _emit_role(wm, r) -> str:
-    name = _local(r.id)
-    lines = [f"public sealed class {name} : Role"]
-    lines.append("{")
-    lines.append(f'    public const string WmId = "{r.id}";')
+def _concept_source(wm, c, m) -> str:
+    here, name = m.id, local(c.id)
+    base = _type_name(c.extends, wm.concepts[c.extends].module, here) if c.extends else f"{_KERNEL}.Entity"
+    kind = "abstract partial class" if c.kind == "abstract" else "partial class"
+    hides = "new " if c.extends else ""
+    lines = [
+        *_head(m),
+        f"/// <summary>{name} - <c>{c.id}</c>. {_xml(c.definition)}</summary>",
+        f"public {kind} {name} : {base}",
+        "{",
+        f'    public {hides}const string WmId = "{c.id}";',
+    ]
+    for p in c.properties:
+        lines += _property(wm, p, name, here)
+    return "\n".join([*lines, "}"])
+
+
+def _role_source(wm, r, m) -> str:
+    here, name = m.id, local(r.id)
+    lines = [
+        *_head(m),
+        f"/// <summary>{name} role - <c>{r.id}</c>. {_xml(r.definition)}</summary>",
+        f"public partial class {name} : {_KERNEL}.Role",
+        "{",
+        f'    public const string WmId = "{r.id}";',
+    ]
     if r.played_by:
         lines.append(f'    public const string WmPlayedBy = "{r.played_by}";')
-    params = ", ".join(f"{_cs_type(wm, p)} {_ident(p.name)}" for p in r.properties)
-    lines.append(f"    public {name}({params})")
-    lines.append("    {")
+    lines += ["", f"    public override {_KERNEL}.ConceptId RoleType => WmId;"]
+    if r.played_by:
+        lines.append("    public override string PlayedBy => WmPlayedBy;")
     for p in r.properties:
-        lines.append(f"        {_pascal(p.name)} = {_ident(p.name)};")
-    lines.append("    }")
-    lines.append("    public override ConceptId RoleType => new ConceptId(WmId);")
-    for p in r.properties:
-        lines.append(f"    public {_cs_type(wm, p)} {_pascal(p.name)} {{ get; }}")
-    lines.append("}")
-    lines.append("")
+        lines += _property(wm, p, name, here)
+    return "\n".join([*lines, "}"])
+
+
+def _csproj(name: str, version: str, references: list[str], module=None) -> str:
+    lines = [
+        '<Project Sdk="Microsoft.NET.Sdk">',
+        "",
+        "  <!--",
+        banner("   ", module, _HINT.format(project=name)),
+        "  -->",
+        "  <PropertyGroup>",
+        "    <TargetFramework>net8.0</TargetFramework>",
+        "    <Nullable>enable</Nullable>",
+        "    <ImplicitUsings>disable</ImplicitUsings>",
+        f"    <RootNamespace>{name}</RootNamespace>",
+        f"    <AssemblyName>{name}</AssemblyName>",
+        f"    <Version>{version}</Version>",
+        "  </PropertyGroup>",
+    ]
+    if references:
+        lines += ["", "  <ItemGroup>"]
+        lines += [f'    <ProjectReference Include="../{ref}/{ref}.csproj" />' for ref in references]
+        lines.append("  </ItemGroup>")
+    own = f"$(WmoopSourceRoot)/{name}"
+    lines += [
+        "",
+        "  <!-- The hand-written halves of the partial classes, when the binding sets WmoopSourceRoot. -->",
+        "  <ItemGroup Condition=\"'$(WmoopSourceRoot)' != ''\">",
+        f'    <Compile Include="{own}/**/*.cs" Exclude="{own}/bin/**;{own}/obj/**" />',
+        "  </ItemGroup>",
+        "",
+        "</Project>",
+    ]
     return "\n".join(lines)
+
+
+def _guid(name: str) -> str:
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"https://github.com/WMOOP/{name}")).upper()
+
+
+def _solution(projects: list[str]) -> str:
+    lines = [
+        "",
+        "Microsoft Visual Studio Solution File, Format Version 12.00",
+        "# Visual Studio Version 17",
+        "VisualStudioVersion = 17.0.31903.59",
+        "MinimumVisualStudioVersion = 10.0.40219.1",
+    ]
+    for p in projects:
+        lines += [f'Project("{{{_CSHARP_PROJECT_TYPE}}}") = "{p}", "{p}\\{p}.csproj", "{{{_guid(p)}}}"', "EndProject"]
+    lines += [
+        "Global",
+        "\tGlobalSection(SolutionConfigurationPlatforms) = preSolution",
+        "\t\tDebug|Any CPU = Debug|Any CPU",
+        "\t\tRelease|Any CPU = Release|Any CPU",
+        "\tEndGlobalSection",
+        "\tGlobalSection(ProjectConfigurationPlatforms) = postSolution",
+    ]
+    for p in projects:
+        for cfg in ("Debug", "Release"):
+            lines += [
+                f"\t\t{{{_guid(p)}}}.{cfg}|Any CPU.ActiveCfg = {cfg}|Any CPU",
+                f"\t\t{{{_guid(p)}}}.{cfg}|Any CPU.Build.0 = {cfg}|Any CPU",
+            ]
+    return "\n".join([*lines, "\tEndGlobalSection", "EndGlobal"])
 
 
 def generate_csharp(wm, out_dir: str) -> list:
-    proj = os.path.join(out_dir, "Wmoop.Generated")
-    written = []
-
-    rt = os.path.join(proj, "_Runtime.cs")
-    _w(rt, CS_RUNTIME)
-    written.append(rt)
-
-    _w(os.path.join(proj, "Wmoop.Generated.csproj"), CSPROJ)
-    written.append(os.path.join(proj, "Wmoop.Generated.csproj"))
+    written: list[str] = []
+    core = wm.modules.get(CORE_MODULE)
+    kernel = os.path.join(out_dir, _KERNEL_PROJECT, "Kernel.Gen.cs")
+    written.append(write(kernel, banner("//", core) + "\n" + template("csharp", "Kernel.cs")))
+    projects = [_KERNEL_PROJECT]
+    if core is None:
+        written.append(
+            write(
+                os.path.join(out_dir, _KERNEL_PROJECT, f"{_KERNEL_PROJECT}.csproj"),
+                _csproj(_KERNEL_PROJECT, __version__, []),
+            )
+        )
 
     for m in wm.modules.values():
-        local_ids = {c.id for c in m.concepts}
-        cross_ns = set()
-        for c in m.concepts:
-            if c.extends and c.extends not in local_ids and c.extends in wm.concepts:
-                cross_ns.add(_ns(wm.modules[wm.concepts[c.extends].module]))
-
-        body = [f"// Generated from module {m.id} v{m.version}. DO NOT EDIT — regenerate with wmoop.tools."]
-        body.append("using System;")
-        body.append("using System.Collections.Generic;")
-        body.append("using Wmoop.Generated.Runtime;")
-        for ns in sorted(cross_ns):
-            body.append(f"using {ns};")
-        body.append("")
-        body.append(f"namespace {_ns(m)};")
-        body.append("")
-
+        name = project(m.id)
+        folder = os.path.join(out_dir, name)
+        sources: dict[str, str] = {}
         for e in m.enumerations:
-            members = ", ".join(v.id for v in e.values)
-            body.append(f"public enum {_local(e.id)} {{ {members} }}")
-            body.append("")
-
-        for c in topo_concepts(m, wm):
-            body.append(_emit_concept(wm, c))
+            sources[local(e.id)] = _enum_source(e, m)
+        for c in m.concepts:
+            sources[local(c.id)] = _concept_source(wm, c, m)
         for r in m.roles:
-            body.append(_emit_role(wm, r))
+            sources[local(r.id)] = _role_source(wm, r, m)
+        if len(sources) != len(m.enumerations) + len(m.concepts) + len(m.roles):
+            raise ModelError(f"{m.id}: two types share a name")
+        for type_name, source in sorted(sources.items()):
+            written.append(write(os.path.join(folder, f"{type_name}.Gen.cs"), source))
 
-        fname = _pascal(m.dir_name or m.id.split(".")[-1]) + ".cs"
-        path = os.path.join(proj, fname)
-        _w(path, "\n".join(body))
-        written.append(path)
+        deps = {d for d in m.depends_on if d in wm.modules} | set(referenced_modules(wm, m))
+        refs = sorted(project(d) for d in deps - {m.id, CORE_MODULE})
+        if m.id != CORE_MODULE:
+            refs.insert(0, _KERNEL_PROJECT)
+        written.append(write(os.path.join(folder, f"{name}.csproj"), _csproj(name, m.version, refs, m)))
+        if m.id != CORE_MODULE:
+            projects.append(name)
 
+    written.append(write(os.path.join(out_dir, _SOLUTION), _solution(projects)))
     return written

@@ -49,13 +49,13 @@ def test_check_reports_stray_and_edited_files(tmp_path):
     out = tmp_path / "generated"
     assert _run("python", out).returncode == 0
     (out / "stray.py").write_text("x = 1\n", encoding="utf-8")
-    edited = out / "wmoop_model" / "__init__.py"
+    edited = out / "wmoop" / "transport.py"
     edited.write_text(edited.read_text(encoding="utf-8") + "# hand edit\n", encoding="utf-8")
 
     stale = _run("python", out, "--check")
     assert stale.returncode == 1
     assert "no longer generated: stray.py" in stale.stdout
-    assert "differs: wmoop_model/__init__.py" in stale.stdout
+    assert "differs: wmoop/transport.py" in stale.stdout
 
 
 def test_refuses_to_empty_a_directory_it_did_not_generate(tmp_path):
