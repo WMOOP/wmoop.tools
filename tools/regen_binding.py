@@ -64,7 +64,9 @@ def _validate_model(doc: Path) -> None:
     validator = doc / "schema" / "validate_wml.py"
     if not validator.is_file():
         raise SystemExit(f"{validator} not found: --doc must point at a wmoop.doc checkout")
-    if subprocess.run([sys.executable, str(validator), "--strict"], cwd=doc).returncode != 0:
+    # -B: no __pycache__ inside the wmoop.doc submodule. That untracked content would make the
+    # submodule look modified, and the regen workflow would then try to commit a change it cannot.
+    if subprocess.run([sys.executable, "-B", str(validator), "--strict"], cwd=doc).returncode != 0:
         raise SystemExit("the model fails wmoop.doc's own validator; nothing was generated")
 
 
