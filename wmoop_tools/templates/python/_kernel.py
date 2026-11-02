@@ -6,8 +6,10 @@
 from __future__ import annotations
 
 import importlib
+import sys
+from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import TypeVar
+from typing import Any, TypeVar
 
 
 @dataclass(frozen=True)
@@ -121,6 +123,139 @@ class Role:
         if self._wm_subject is not None:
             raise RuntimeError("Role is already attached to a subject.")
         self._wm_subject = subject
+
+
+class _End:
+    """One end of a relation, declared on the class that holds it.
+
+    ``target`` is a class name in the same module, or ``wmoop.<domain>.<Name>``. ``inverse`` names the
+    end on the target class when the relation is navigable both ways.
+    """
+
+    name = ""
+
+    def __init__(self, target: str, inverse: str | None = None, doc: str = "") -> None:
+        self._target, self.inverse, self.__doc__ = target, inverse, doc
+
+    def __set_name__(self, owner: type, name: str) -> None:
+        self.name, self._module = name, owner.__module__
+
+    def target(self) -> type:
+        module, _, cls = self._target.rpartition(".")
+        return getattr(sys.modules[module or self._module], cls)
+
+    def check(self, item: object) -> None:
+        if not isinstance(item, self.target()):
+            raise TypeError(f"{self.name} relates to {self.target().__name__}, not to {type(item).__name__}.")
+
+    def back(self, item: object) -> _End | None:
+        """The opposite end, as declared on ``item``'s class."""
+        return getattr(type(item), self.inverse) if self.inverse else None
+
+    def keep(self, obj: object, item: object) -> None:
+        """Record ``item`` on ``obj``'s end without touching the opposite end."""
+        raise NotImplementedError
+
+    def drop(self, obj: object, item: object) -> None:
+        """Forget ``item`` on ``obj``'s end without touching the opposite end."""
+        raise NotImplementedError
+
+    @staticmethod
+    def links(obj: object) -> dict[str, Any]:
+        return obj.__dict__.setdefault("_wm_links", {})
+
+
+class One(_End):
+    """A to-one relation end: an attribute whose assignment also updates the opposite end."""
+
+    def __get__(self, obj: object | None, objtype: type | None = None) -> Any:
+        return self if obj is None else self.links(obj).get(self.name)
+
+    def __set__(self, obj: object, value: object | None) -> None:
+        if value is not None:
+            self.check(value)
+        old = self.links(obj).get(self.name)
+        if old is value:
+            return
+        if old is not None and (back := self.back(old)) is not None:
+            back.drop(old, obj)
+        self.links(obj)[self.name] = value
+        if value is not None and (back := self.back(value)) is not None:
+            back.keep(value, obj)
+
+    def keep(self, obj: object, item: object) -> None:
+        self.links(obj)[self.name] = item
+
+    def drop(self, obj: object, item: object) -> None:
+        if self.links(obj).get(self.name) is item:
+            self.links(obj)[self.name] = None
+
+
+class Many(_End):
+    """A to-many relation end, read through a :class:`LinkSet`."""
+
+    def __get__(self, obj: object | None, objtype: type | None = None) -> Any:
+        return self if obj is None else LinkSet(obj, self)
+
+    def __set__(self, obj: object, value: object) -> None:
+        raise AttributeError(f"{self.name} is a to-many relation: use .add() and .remove().")
+
+    def items(self, obj: object) -> list[Any]:
+        return self.links(obj).setdefault(self.name, [])
+
+    def keep(self, obj: object, item: object) -> None:
+        if not any(i is item for i in self.items(obj)):
+            self.items(obj).append(item)
+
+    def drop(self, obj: object, item: object) -> None:
+        self.items(obj)[:] = [i for i in self.items(obj) if i is not item]
+
+    def link(self, obj: object, item: object) -> None:
+        self.check(item)
+        back = self.back(item)
+        if isinstance(back, One):
+            setattr(item, back.name, obj)  # the to-one end updates both sides
+            return
+        self.keep(obj, item)
+        if back is not None:
+            back.keep(item, obj)
+
+    def unlink(self, obj: object, item: object) -> None:
+        back = self.back(item)
+        if isinstance(back, One):
+            if getattr(item, back.name) is obj:
+                setattr(item, back.name, None)
+            return
+        self.drop(obj, item)
+        if back is not None:
+            back.drop(item, obj)
+
+
+class LinkSet:
+    """The live view of a to-many relation end; ``add`` / ``remove`` keep the opposite end in step."""
+
+    def __init__(self, obj: object, end: Many) -> None:
+        self._obj, self._end = obj, end
+
+    def add(self, item: object) -> None:
+        if item not in self:
+            self._end.link(self._obj, item)
+
+    def remove(self, item: object) -> None:
+        if item in self:
+            self._end.unlink(self._obj, item)
+
+    def __iter__(self) -> Iterator[Any]:
+        return iter(tuple(self._end.items(self._obj)))
+
+    def __len__(self) -> int:
+        return len(self._end.items(self._obj))
+
+    def __contains__(self, item: object) -> bool:
+        return any(i is item for i in self._end.items(self._obj))
+
+    def __repr__(self) -> str:
+        return f"LinkSet({list(self)!r})"
 
 
 def ext(module: str, name: str) -> tuple[type, ...]:

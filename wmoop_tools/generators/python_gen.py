@@ -37,8 +37,10 @@ from .common import (
     banner,
     cardinality,
     local,
+    module_of,
     module_path,
     referenced_modules,
+    relation_ends,
     resolve_type,
     snake,
     template,
@@ -48,7 +50,7 @@ from .common import (
 # Members of Entity / Role that a property must not shadow.
 _KERNEL_MEMBERS = frozenset({"id", "name", "roles", "is_a", "add_role", "has_role", "get_role", "role_type", "subject"})
 _PRIMITIVE = {"string": "str", "integer": "int", "decimal": "float", "boolean": "bool", "date": "datetime.date"}
-_KERNEL_IMPORT = "from wmoop._kernel import ConceptId, Entity, Quantity, Role, ext  # noqa: F401"
+_KERNEL_IMPORT = "from wmoop._kernel import ConceptId, Entity, Many, One, Quantity, Role, ext  # noqa: F401"
 _EXT_HINT = "Add behaviour as a mixin <Name>Ext in wmoop_ext.{module} (see wmoop_tools/generators/python_gen.py)."
 
 
@@ -172,6 +174,26 @@ def _emit_enum(e) -> list[str]:
     return [*lines, "", ""]
 
 
+def _relations(wm, holder, here: str) -> list[str]:
+    """Class-level relation ends: ``One`` (to-one) / ``Many`` (to-many) descriptors from the kernel."""
+    taken = {prop_name(p) for p in holder.properties}
+    lines = []
+    for end in relation_ends(wm, holder):
+        attr = ident(snake(end.name))
+        if attr in taken:
+            raise ModelError(f"{holder.id}: relation end '{end.name}' clashes with another member")
+        taken.add(attr)
+        other = module_of(wm, end.other)
+        target = local(end.other) if other == here else f"wmoop.{dotted(other)}.{local(end.other)}"
+        args = [repr(target)]
+        if end.opposite:
+            args.append(f"inverse={ident(snake(end.opposite))!r}")
+        doc = f"Inverse of {end.relation.id}." if end.inverse else (end.relation.definition or end.name)
+        args.append(f"doc={' '.join(doc.split())!r}")
+        lines.append(f"    {attr} = {'Many' if end.many else 'One'}({', '.join(args)})")
+    return ["", *lines] if lines else []
+
+
 def _emit_concept(wm, c, here: str) -> list[str]:
     name = local(c.id)
     base = _type_name(c.extends, wm.concepts[c.extends].module, here) if c.extends else "Entity"
@@ -181,6 +203,7 @@ def _emit_concept(wm, c, here: str) -> list[str]:
         "",
         f"    WM_ID = {c.id!r}",
         f"    WM_KIND = {c.kind!r}",
+        *_relations(wm, c, here),
     ]
     if c.properties:
         lines += _init(wm, here, all_properties(wm, c), inherited_properties(wm, c), c.properties, role=False)
@@ -197,6 +220,7 @@ def _emit_role(wm, r, here: str) -> list[str]:
         "",
         f"    WM_ID = {r.id!r}",
         f"    WM_PLAYED_BY = {(r.played_by or '')!r}",
+        *_relations(wm, r, here),
     ]
     if r.properties:
         lines += _init(wm, here, r.properties, [], r.properties, role=True)

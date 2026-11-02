@@ -33,6 +33,19 @@ class Enumeration:
 
 
 @dataclass
+class Relation:
+    """A binary relation declared on its owner; ``inverse`` names the implicit end on the target."""
+
+    id: str
+    name: str
+    target: str
+    cardinality: str = "0..*"
+    inverse: str | None = None  # "<target qname>#<member>", the end generated on the target
+    rel: str = "association"  # association | part_of | aggregation | composition
+    definition: str | None = None
+
+
+@dataclass
 class Datatype:
     id: str
     name: str
@@ -49,6 +62,7 @@ class Concept:
     extends: str | None = None
     implements: list = field(default_factory=list)
     properties: list = field(default_factory=list)  # list[Property]
+    relations: list = field(default_factory=list)  # list[Relation]
     definition: str | None = None
     module: str | None = None
 
@@ -60,6 +74,7 @@ class Role:
     played_by: str | None = None
     context: str | None = None
     properties: list = field(default_factory=list)  # list[Property]
+    relations: list = field(default_factory=list)  # list[Relation]
     definition: str | None = None
     module: str | None = None
 

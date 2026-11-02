@@ -171,6 +171,27 @@ def checks(wm, transport, nature, geography, core) -> list[tuple[str, bool]]:
             drv.licence_categories == (transport.LicenceCategory.AM, transport.LicenceCategory.B),
         )
     )
+
+    ro = geography.Country("wm:geo/RO", "Romania")
+    cj = geography.County("wm:geo/CJ", "Cluj")
+    cn = geography.City("wm:geo/CN", "Cluj-Napoca")
+    cj.part_of = ro
+    ro.contains.add(cn)
+    cn.part_of = cj  # moves the city from the country into the county
+    results.append(
+        (
+            "Generated composite: partOf and its inverse contains stay in step",
+            list(ro.contains) == [cj] and list(cj.contains) == [cn] and cn.part_of is cj,
+        )
+    )
+    owner = ada.add_role(transport.Owner())
+    owner.owns.add(moped)
+    results.append(
+        (
+            "Generated many-to-many relation: Owner.owns <-> Vehicle.ownedBy",
+            list(moped.owned_by) == [owner] and list(owner.owns) == [moped],
+        )
+    )
     return results
 
 

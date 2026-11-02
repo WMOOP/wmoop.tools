@@ -17,3 +17,11 @@ concepts:
         type: string
         required: true
         definition: A human-readable label.
+    relations:
+      - id: wmoop.base/Thing#partOf
+        name: partOf
+        rel: part_of
+        target: wmoop.base/Thing
+        cardinality: "0..1"
+        inverse: wmoop.base/Thing#hasPart
+        definition: The whole this thing is a part of.

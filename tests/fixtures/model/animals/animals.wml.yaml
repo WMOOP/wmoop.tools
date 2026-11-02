@@ -51,3 +51,10 @@ concepts:
       - id: wmoop.animals/Person#dateOfBirth
         name: dateOfBirth
         type: date
+    relations:
+      - id: wmoop.animals/Person#knows
+        name: knows
+        target: wmoop.animals/Person
+        cardinality: "0..*"
+        inverse: wmoop.animals/Person#knownBy
+        definition: People this person knows.

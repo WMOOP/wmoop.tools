@@ -1,6 +1,8 @@
 #nullable enable
 using System;
+using System.Collections;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Globalization;
 using System.Reflection;
 
@@ -108,6 +110,57 @@ public abstract class Entity : IHasRoles
     }
 
     public override string ToString() => $"{Name} [{Id}]";
+}
+
+/// <summary>
+/// A to-many relation end. <see cref="Add"/> and <see cref="Remove"/> keep the opposite end in step;
+/// the generated code supplies how.
+/// </summary>
+public sealed class Links<T> : IReadOnlyCollection<T> where T : class
+{
+    private readonly List<T> _items = new();
+    private readonly Action<T> _link;
+    private readonly Action<T> _unlink;
+
+    public Links(Action<T> link, Action<T> unlink)
+    {
+        _link = link ?? throw new ArgumentNullException(nameof(link));
+        _unlink = unlink ?? throw new ArgumentNullException(nameof(unlink));
+    }
+
+    public int Count => _items.Count;
+
+    public bool Contains(T item) => _items.Exists(i => ReferenceEquals(i, item));
+
+    public void Add(T item)
+    {
+        ArgumentNullException.ThrowIfNull(item);
+        if (!Contains(item))
+            _link(item);
+    }
+
+    public void Remove(T item)
+    {
+        ArgumentNullException.ThrowIfNull(item);
+        if (Contains(item))
+            _unlink(item);
+    }
+
+    public IEnumerator<T> GetEnumerator() => _items.GetEnumerator();
+
+    IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+
+    /// <summary>Adds without touching the opposite end. For generated wiring code only.</summary>
+    [EditorBrowsable(EditorBrowsableState.Never)]
+    public void Keep(T item)
+    {
+        if (!Contains(item))
+            _items.Add(item);
+    }
+
+    /// <summary>Removes without touching the opposite end. For generated wiring code only.</summary>
+    [EditorBrowsable(EditorBrowsableState.Never)]
+    public void Drop(T item) => _items.RemoveAll(i => ReferenceEquals(i, item));
 }
 
 /// <summary>Base of every generated role: a facet an entity plays, attached by composition.</summary>

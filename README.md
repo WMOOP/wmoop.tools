@@ -34,6 +34,10 @@ model/*.wml.yaml  ──load──▶  WorldModel  ──validate──▶  (ok)
 Generators emit **data**:
 
 - classes, properties, inheritance, enumerations and roles;
+- relations, with their inverse kept in step: a to-one end is a property whose setter updates the other
+  end (`city.part_of = county` / `city.PartOf = county`), a to-many end a live collection whose
+  add/remove do the same (`owner.owns.add(moped)` / `owner.Owns.Add(moped)`). An inverse is generated
+  only inside one module, so a base package never depends on the packages that extend it;
 - required and `1..*` checks;
 - the role machinery: every entity can play roles by composition, and a role refuses a subject that
   is not its `played_by` type.
