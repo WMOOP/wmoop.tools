@@ -11,7 +11,7 @@ import os
 
 import yaml
 
-from .model import Concept, Datatype, Enumeration, EnumValue, Module, Property, Role, WorldModel
+from .model import Concept, Datatype, Enumeration, EnumValue, Module, Property, Relation, Role, WorldModel
 
 
 def _prop(d: dict) -> Property:
@@ -28,6 +28,19 @@ def _prop(d: dict) -> Property:
     )
 
 
+def _relation(d: dict) -> Relation:
+    rid = d.get("id", "")
+    return Relation(
+        id=rid,
+        name=d.get("name") or rid.split("#")[-1],
+        target=d.get("target", ""),
+        cardinality=str(d.get("cardinality", "0..*")),
+        inverse=d.get("inverse"),
+        rel=d.get("rel", "association"),
+        definition=d.get("definition"),
+    )
+
+
 def _concept(d: dict, module_id: str) -> Concept:
     return Concept(
         id=d["id"],
@@ -36,6 +49,7 @@ def _concept(d: dict, module_id: str) -> Concept:
         extends=d.get("extends"),
         implements=list(d.get("implements") or []),
         properties=[_prop(p) for p in (d.get("properties") or [])],
+        relations=[_relation(r) for r in (d.get("relations") or [])],
         definition=d.get("definition"),
         module=module_id,
     )
@@ -48,6 +62,7 @@ def _role(d: dict, module_id: str) -> Role:
         played_by=d.get("played_by"),
         context=d.get("context"),
         properties=[_prop(p) for p in (d.get("properties") or [])],
+        relations=[_relation(r) for r in (d.get("relations") or [])],
         definition=d.get("definition"),
         module=module_id,
     )

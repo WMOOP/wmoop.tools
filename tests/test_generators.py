@@ -184,8 +184,10 @@ def test_csharp_project_references_follow_the_module_graph(world_model, tmp_path
     society = (tmp_path / "Wmoop.Society" / "Wmoop.Society.csproj").read_text(encoding="utf-8")
     assert '<ProjectReference Include="../Wmoop.Core/Wmoop.Core.csproj" />' in society
     assert '<ProjectReference Include="../Wmoop.Animals/Wmoop.Animals.csproj" />' in society
-    assert "Wmoop.Base.csproj" not in society  # only direct dependencies
+    assert '<ProjectReference Include="../Wmoop.Base/Wmoop.Base.csproj" />' in society
     assert '<Compile Include="$(WmoopSourceRoot)/Wmoop.Society/**/*.cs"' in society  # the hand-written half
+    animals = (tmp_path / "Wmoop.Animals" / "Wmoop.Animals.csproj").read_text(encoding="utf-8")
+    assert "Wmoop.Society.csproj" not in animals  # never against the module graph
 
 
 def test_csharp_types_are_partial_with_init_properties(world_model, tmp_path):
@@ -232,3 +234,61 @@ def test_csharp_generation_is_deterministic(world_model, tmp_path):
     generate_csharp(world_model, str(d1))
     generate_csharp(world_model, str(d2))
     _assert_identical(d1, d2)
+
+
+# --- Relations -----------------------------------------------------------------
+
+
+def test_python_to_one_relation_keeps_its_inverse_in_step(generated_python):
+    a = generated_python.animals
+    whole = a.Person("wm:w", "whole", label="w", full_name="W")
+    other = a.Person("wm:o", "other", label="o", full_name="O")
+    part = a.Person("wm:p", "part", label="p", full_name="P")
+    part.part_of = whole
+    assert list(whole.has_part) == [part]
+    other.has_part.add(part)  # adding on the to-many end moves the part
+    assert part.part_of is other and list(whole.has_part) == [] and list(other.has_part) == [part]
+    other.has_part.remove(part)
+    assert part.part_of is None and len(other.has_part) == 0
+
+
+def test_python_many_to_many_relation_is_symmetric(generated_python):
+    a = generated_python.animals
+    ada = a.Person("wm:a", "Ada", label="a", full_name="Ada")
+    bob = a.Person("wm:b", "Bob", label="b", full_name="Bob")
+    ada.knows.add(bob)
+    assert bob in ada.knows and ada in bob.known_by
+    bob.known_by.remove(ada)
+    assert len(ada.knows) == 0 and len(bob.known_by) == 0
+
+
+def test_python_relation_ends_check_types_and_cannot_be_replaced(generated_python):
+    a = generated_python.animals
+    ada = a.Person("wm:a", "Ada", label="a", full_name="Ada")
+    with pytest.raises(TypeError, match="relates to Person"):
+        ada.knows.add("Bob")
+    with pytest.raises(AttributeError, match="to-many"):
+        ada.knows = []
+
+
+def test_python_cross_module_inverse_is_not_generated(generated_python):
+    citizen = generated_python.society.Citizen(citizen_id="RO-1")
+    place = generated_python.animals.Person("wm:h", "home", label="h", full_name="H")
+    citizen.resides_in = place  # the forward end works
+    assert citizen.resides_in is place
+    assert not hasattr(generated_python.base.Thing, "residents")  # base never depends on society
+
+
+def test_csharp_relation_members(world_model, tmp_path):
+    generate_csharp(world_model, str(tmp_path))
+    thing = (tmp_path / "Wmoop.Base" / "Thing.Gen.cs").read_text(encoding="utf-8")
+    assert "public Thing? PartOf" in thing
+    assert "_wmPartOf?.HasPart.Drop(this);" in thing
+    assert "value?.HasPart.Keep(this);" in thing
+    assert "public global::Wmoop.Core.Links<Thing> HasPart => _wmHasPart ??= new(" in thing
+    assert "Residents" not in thing  # cross-module inverse: base never depends on society
+    person = (tmp_path / "Wmoop.Animals" / "Person.Gen.cs").read_text(encoding="utf-8")
+    assert "item => { Knows.Keep(item); item.KnownBy.Keep(this); }," in person
+    assert "item => item.Knows.Add(this)," in person
+    citizen = (tmp_path / "Wmoop.Society" / "Citizen.Gen.cs").read_text(encoding="utf-8")
+    assert "public global::Wmoop.Base.Thing? ResidesIn { get; set; }" in citizen

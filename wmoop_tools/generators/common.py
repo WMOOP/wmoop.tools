@@ -11,6 +11,7 @@ from dataclasses import dataclass
 
 from .. import __version__
 from ..compile import ModelError
+from ..model import Relation
 
 PRIMITIVES = frozenset({"string", "integer", "decimal", "boolean", "date"})
 TEMPLATES = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "templates")
@@ -66,7 +67,7 @@ def cardinality(p) -> Card:
         upper = None if hi == "*" else int(hi)
     except ValueError as exc:
         raise ModelError(f"{p.id}: unreadable cardinality {text!r}") from exc
-    if p.required and lower == 0:
+    if getattr(p, "required", False) and lower == 0:
         lower = 1
     return Card(lower, upper)
 
@@ -112,7 +113,7 @@ def module_of(wm, qname: str) -> str:
 
 
 def referenced_modules(wm, module) -> list[str]:
-    """Every other module whose types this module's classes extend or hold, sorted."""
+    """Every other module whose types this module's classes extend, hold or relate to, sorted."""
     refs: set[str] = set()
     for c in module.concepts:
         if c.extends:
@@ -122,8 +123,50 @@ def referenced_modules(wm, module) -> list[str]:
             t = resolve_type(wm, p)
             if t.module:
                 refs.add(t.module)
+        for r in owner.relations:
+            refs.add(module_of(wm, r.target))
     refs.discard(module.id)
     return sorted(refs)
+
+
+@dataclass(frozen=True)
+class RelationEnd:
+    """One navigable end of a relation, as generated on the class ``holder``.
+
+    A relation declared on its owner gives the forward end there. Its ``inverse`` gives a to-many end
+    on the target, but only inside one module, so a base package never depends on the packages that
+    extend it (docs/03-architecture.md §4.5).
+    """
+
+    holder: str  # the class that holds this end
+    name: str  # the member name in the model, e.g. "partOf" / "contains"
+    other: str  # the element type: the class at the other end
+    many: bool
+    opposite: str | None  # the member name of the other end, when the relation is navigable both ways
+    relation: Relation
+    inverse: bool  # True for the end generated from `inverse:`
+
+
+def _two_way(wm, owner, r) -> str | None:
+    if not r.inverse or module_of(wm, r.target) != owner.module:
+        return None
+    return r.inverse.partition("#")[2]
+
+
+def relation_ends(wm, holder) -> list[RelationEnd]:
+    """The relation ends generated on ``holder`` (a concept or role): its own, then the inverse ones."""
+    ends = []
+    for r in holder.relations:
+        many = cardinality(r).many
+        ends.append(RelationEnd(holder.id, r.name, r.target, many, _two_way(wm, holder, r), r, False))
+    for owner in [*wm.concepts.values(), *wm.roles.values()]:
+        if owner.module != holder.module:
+            continue
+        for r in owner.relations:
+            inverse = _two_way(wm, owner, r)
+            if inverse and r.target == holder.id:
+                ends.append(RelationEnd(holder.id, inverse, owner.id, True, r.name, r, True))
+    return ends
 
 
 def banner(comment: str, module=None, hint: str = "") -> str:

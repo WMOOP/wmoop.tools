@@ -4,6 +4,7 @@ module:
   title: Society
   depends_on:
     - module: wmoop.animals
+    - module: wmoop.base
 
 # Citizen is a ROLE played by a Person (cross-module). This makes Person role-bearing,
 # so the generators attach roles by composition rather than inheritance.
@@ -18,3 +19,10 @@ roles:
         name: citizenId
         type: string
         required: true
+    relations:
+      - id: wmoop.society/Citizen#residesIn
+        name: residesIn
+        target: wmoop.base/Thing
+        cardinality: "0..1"
+        inverse: wmoop.base/Thing#residents
+        definition: Where the citizen lives (cross-module, so its inverse is not generated on Thing).

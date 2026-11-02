@@ -21,6 +21,7 @@ def validate(wm: WorldModel) -> WorldModel:
     for r in wm.roles.values():
         if r.played_by and r.played_by not in wm.concepts:
             errors.append(f"{r.id}: played_by unknown concept '{r.played_by}'")
+    errors += _relation_errors(wm)
 
     # Module dependency graph must be acyclic (Invariant 5). External deps
     # (modules not in this model, e.g. wmoop.core) are ignored.
@@ -62,6 +63,30 @@ def validate(wm: WorldModel) -> WorldModel:
     if errors:
         raise ModelError("Model validation failed:\n  - " + "\n  - ".join(errors))
     return wm
+
+
+def _relation_errors(wm: WorldModel) -> list[str]:
+    """Targets resolve; an inverse is declared on the relation's target, under a free member name."""
+    errors: list[str] = []
+    members: dict[str, set[str]] = {}
+    for owner in [*wm.concepts.values(), *wm.roles.values()]:
+        members.setdefault(owner.id, set()).update(p.name for p in owner.properties)
+        members[owner.id].update(r.name for r in owner.relations)
+    for owner in [*wm.concepts.values(), *wm.roles.values()]:
+        for r in owner.relations:
+            if r.target not in wm.concepts and r.target not in wm.roles:
+                errors.append(f"{r.id}: relation target '{r.target}' is not a concept or role")
+                continue
+            if not r.inverse:
+                continue
+            on, _, name = r.inverse.partition("#")
+            if on != r.target or not name:
+                errors.append(f"{r.id}: inverse '{r.inverse}' must be a member of the target, {r.target}#<name>")
+            elif name in members.setdefault(on, set()):
+                errors.append(f"{r.id}: inverse '{r.inverse}' clashes with a member {on} already has")
+            else:
+                members[on].add(name)
+    return errors
 
 
 def concept_chain(wm: WorldModel, concept: Concept) -> list:

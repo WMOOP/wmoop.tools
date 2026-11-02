@@ -42,7 +42,7 @@ def test_module_metadata(world_model):
 
 def test_depends_on_parsed(world_model):
     assert world_model.modules["wmoop.animals"].depends_on == ["wmoop.base"]
-    assert world_model.modules["wmoop.society"].depends_on == ["wmoop.animals"]
+    assert world_model.modules["wmoop.society"].depends_on == ["wmoop.animals", "wmoop.base"]
 
 
 def test_concepts_indexed(world_model):
@@ -75,3 +75,17 @@ def test_property_fields(world_model):
     animal = world_model.concepts["wmoop.animals/Animal"]
     mass = next(p for p in animal.properties if p.name == "mass")
     assert mass.unit == "kg"
+
+
+def test_relations_are_loaded(world_model):
+    thing = world_model.concepts["wmoop.base/Thing"]
+    (part_of,) = thing.relations
+    assert (part_of.name, part_of.target, part_of.cardinality, part_of.rel) == (
+        "partOf",
+        "wmoop.base/Thing",
+        "0..1",
+        "part_of",
+    )
+    assert part_of.inverse == "wmoop.base/Thing#hasPart"
+    citizen = world_model.roles["wmoop.society/Citizen"]
+    assert [r.name for r in citizen.relations] == ["residesIn"]

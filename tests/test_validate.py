@@ -11,7 +11,7 @@ from wmoop_tools.compile import (
     inherited_properties,
     validate,
 )
-from wmoop_tools.model import Concept, Module, Role, WorldModel
+from wmoop_tools.model import Concept, Module, Relation, Role, WorldModel
 
 
 def _wm(concepts=(), roles=(), modules=()) -> WorldModel:
@@ -90,3 +90,27 @@ def test_inherited_properties_exclude_own(world_model):
     assert "label" in inherited  # from Thing
     assert "legCount" in inherited  # from Animal
     assert "fullName" not in inherited  # Person's own property
+
+
+def _related(*relations) -> WorldModel:
+    a = Concept(id="wmoop.x/A", name="A", relations=list(relations), module="wmoop.x")
+    b = Concept(id="wmoop.x/B", name="B", module="wmoop.x")
+    return _wm(concepts=[a, b])
+
+
+def test_relation_target_must_exist():
+    with pytest.raises(ModelError, match="relation target"):
+        validate(_related(Relation(id="wmoop.x/A#r", name="r", target="wmoop.x/Nope")))
+
+
+def test_relation_inverse_belongs_to_the_target():
+    bad = Relation(id="wmoop.x/A#r", name="r", target="wmoop.x/B", inverse="wmoop.x/A#back")
+    with pytest.raises(ModelError, match="must be a member of the target"):
+        validate(_related(bad))
+
+
+def test_relation_inverse_name_is_free_on_the_target():
+    one = Relation(id="wmoop.x/A#r", name="r", target="wmoop.x/B", inverse="wmoop.x/B#back")
+    two = Relation(id="wmoop.x/A#s", name="s", target="wmoop.x/B", inverse="wmoop.x/B#back")
+    with pytest.raises(ModelError, match="clashes"):
+        validate(_related(one, two))

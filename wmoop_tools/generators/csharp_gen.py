@@ -31,9 +31,11 @@ from .common import (
     banner,
     cardinality,
     local,
+    module_of,
     module_path,
     pascal,
     referenced_modules,
+    relation_ends,
     resolve_type,
     template,
     write,
@@ -162,7 +164,11 @@ def project(module_id: str) -> str:
 
 def member(p, owner: str) -> str:
     """The C# property name: PascalCase, renamed when it would clash with its class or the kernel."""
-    name = pascal(p.name)
+    return member_name(p.name, owner)
+
+
+def member_name(model_name: str, owner: str) -> str:
+    name = pascal(model_name)
     return name + "Value" if name == owner or name in _KERNEL_MEMBERS else name
 
 
@@ -250,6 +256,68 @@ def _enum_source(e, m) -> str:
     return "\n".join([*lines, "}"])
 
 
+def _relations(wm, holder, owner: str, here: str) -> list[str]:
+    """Relation ends: a to-one end is a property whose setter keeps the opposite end in step, a
+    to-many end a kernel ``Links<T>`` whose Add / Remove do the same."""
+    taken = {member(p, owner) for p in holder.properties}
+    lines: list[str] = []
+    for end in relation_ends(wm, holder):
+        name = member_name(end.name, owner)
+        if name in taken:
+            raise ModelError(f"{holder.id}: relation end '{end.name}' clashes with another member")
+        taken.add(name)
+        other = _type_name(end.other, module_of(wm, end.other), here)
+        opposite = member_name(end.opposite, local(end.other)) if end.opposite else None
+        doc = f"Inverse of <c>{end.relation.id}</c>." if end.inverse else _xml(end.relation.definition or end.name)
+        field = f"_wm{name}"
+        if not end.many:
+            lines += ["", f"    /// <summary>{doc}</summary>"]
+            if opposite is None:
+                lines.append(f"    public {other}? {name} {{ get; set; }}")
+                continue
+            lines += [
+                f"    public {other}? {name}",
+                "    {",
+                f"        get => {field};",
+                "        set",
+                "        {",
+                f"            if (ReferenceEquals({field}, value))",
+                "                return;",
+                f"            {field}?.{opposite}.Drop(this);",
+                f"            {field} = value;",
+                f"            value?.{opposite}.Keep(this);",
+                "        }",
+                "    }",
+                "",
+                f"    private {other}? {field};",
+            ]
+            continue
+        links = f"{_KERNEL}.Links<{other}>"
+        if end.inverse and cardinality(end.relation).many:
+            wiring = [f"item => item.{opposite}.Add(this),", f"item => item.{opposite}.Remove(this));"]
+        elif end.inverse:
+            wiring = [
+                f"item => item.{opposite} = this,",
+                f"item => {{ if (ReferenceEquals(item.{opposite}, this)) item.{opposite} = null; }});",
+            ]
+        elif opposite:
+            wiring = [
+                f"item => {{ {name}.Keep(item); item.{opposite}.Keep(this); }},",
+                f"item => {{ {name}.Drop(item); item.{opposite}.Drop(this); }});",
+            ]
+        else:
+            wiring = [f"item => {name}.Keep(item),", f"item => {name}.Drop(item));"]
+        lines += [
+            "",
+            f"    /// <summary>{doc}</summary>",
+            f"    public {links} {name} => {field} ??= new(",
+            *(f"        {w}" for w in wiring),
+            "",
+            f"    private {links}? {field};",
+        ]
+    return lines
+
+
 def _concept_source(wm, c, m) -> str:
     here, name = m.id, local(c.id)
     base = _type_name(c.extends, wm.concepts[c.extends].module, here) if c.extends else f"{_KERNEL}.Entity"
@@ -264,6 +332,7 @@ def _concept_source(wm, c, m) -> str:
     ]
     for p in c.properties:
         lines += _property(wm, p, name, here)
+    lines += _relations(wm, c, name, here)
     return "\n".join([*lines, "}"])
 
 
@@ -283,6 +352,7 @@ def _role_source(wm, r, m) -> str:
         lines.append("    public override string PlayedBy => WmPlayedBy;")
     for p in r.properties:
         lines += _property(wm, p, name, here)
+    lines += _relations(wm, r, name, here)
     return "\n".join([*lines, "}"])
 
 
