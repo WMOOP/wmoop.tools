@@ -123,6 +123,7 @@ testpaths = ["tests"]
 addopts = "-ra --strict-markers --strict-config"
 markers = [
     "integration: end-to-end tests that need the external wmoop.doc model repository",
+    "typescript: tests that compile the generated TypeScript with tsc and run it with Node.js",
 ]
 
 # --------------------------------------------------------------------------- #

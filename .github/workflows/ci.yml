@@ -125,11 +125,36 @@ jobs:
       - name: Compile every generated project, warnings as errors (.NET SDK)
         run: dotnet build build/cs/Wmoop.Generated.sln --configuration Release --nologo -warnaserror
 
+  typescript:
+    name: TypeScript binding compiles and runs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive # external/wmoop.doc: the pinned canonical model
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "26"
+      - name: Install the toolchain and the TypeScript compiler
+        run: |
+          pip install -e ".[dev]"
+          npm install --global typescript@7.0.2
+      - name: Generate the TypeScript binding from the pinned model
+        run: python -m wmoop_tools --model external/wmoop.doc/model --lang typescript --out build/ts
+      - name: Check every generated module with its own strict tsconfig, without Node.js types
+        run: tsc -p build/ts
+      - name: Compile the generated code and run it with Node.js (fixture and pinned models)
+        run: pytest tests/test_typescript_runtime.py
+
   # After a green main, ask every binding to regenerate: their regen.yml moves the pins and opens
   # a "chore(regen): ..." pull request when the toolchain change alters anything they commit.
   notify-bindings:
     name: Ask the bindings to regenerate
-    needs: [lint, type-check, test, build, conformance, csharp]
+    needs: [lint, type-check, test, build, conformance, csharp, typescript]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:

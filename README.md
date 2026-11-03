@@ -10,7 +10,7 @@
 [`wmoop.doc`](https://github.com/WMOOP/wmoop.doc)), validates it, and generates idiomatic code in
 multiple languages from that single source. This is the mechanical core of WMOOP's central promise:
 **model the world once, replicate it everywhere** — no hand-maintained duplication across
-`wmoop.net`, `wmoop.py`, `wmoop.java`, `wmoop.cpp`.
+`wmoop.net`, `wmoop.py`, `wmoop.js`, `wmoop.java`, `wmoop.cpp`.
 
 > The adversarial design review called the missing toolchain *"the project that does not yet exist."*
 > This is the first working version of it.
@@ -18,7 +18,7 @@ multiple languages from that single source. This is the mechanical core of WMOOP
 ## Pipeline
 
 ```
-model/*.wml.yaml  ──load──▶  WorldModel  ──validate──▶  (ok)  ──generate──▶  Python / C# / …
+model/*.wml.yaml  ──load──▶  WorldModel  ──validate──▶  (ok)  ──generate──▶  Python / C# / TypeScript / …
    (wmoop.doc)                (in memory)   invariants 3 & 5      per-language bindings
 ```
 
@@ -36,11 +36,13 @@ Generators emit **data**:
 
 - classes, properties, inheritance, enumerations and roles;
 - relations, with their inverse kept in step: a to-one end is a property whose setter updates the other
-  end (`city.part_of = county` / `city.PartOf = county`), a to-many end a live collection whose
-  add/remove do the same (`owner.owns.add(moped)` / `owner.Owns.Add(moped)`). An inverse is generated
-  only inside one module, so a base package never depends on the packages that extend it;
+  end (`city.part_of = county` / `city.PartOf = county` / `city.partOf = county`), a to-many end a live
+  collection whose add/remove do the same (`owner.owns.add(moped)` / `owner.Owns.Add(moped)`; in
+  TypeScript a set-like `Links` with `add` / `delete`). An inverse is generated only inside one module,
+  so a base package never depends on the packages that extend it;
 - the individuals, as instances on the class they instantiate: `Planet.Earth`, `Unit.Kilometre`,
-  `QuantityKind.Speed` (a static property in C#, a class attribute in Python);
+  `QuantityKind.Speed` (a static property in C#, a class attribute in Python, a read-only static in
+  TypeScript);
 - the constructor checks: required and `1..*` slots; a quantity's unit, against the unit catalogue
   generated from the `wmoop.core/Unit` individuals (`maxSpeed` takes `m/s` as well as `km/h`, never
   `kg`; `Quantity.In` / `Quantity.in_` converts within a kind); and the simple invariants,
@@ -51,12 +53,12 @@ Generators emit **data**:
   `cardinality_per_player` allows;
 - errors that carry their code from the model's error-code registry
   ([`conformance/error-codes.yaml`](https://github.com/WMOOP/wmoop.doc/blob/main/conformance/error-codes.yaml)
-  in `wmoop.doc`), e.g. `WM-ROLE-PLAYER-MISMATCH`: `WmoopError.code` in Python, `IWmoopError.Code`
-  in C#. They still derive from the built-in exceptions (`ValueError`, `ArgumentException`, ...), and
-  the code, not the exception type, is what the conformance vectors compare. A unit of another
-  dimension is `WM-UNIT-DIMENSION-MISMATCH`, one of the same dimension but another kind (Angle for a
-  Count) `WM-QUANTITYKIND-MISMATCH`, a broken invariant `WM-INVARIANT-FAILED` and a role over its
-  `cardinality_per_player` `WM-ROLE-DUPLICATE`.
+  in `wmoop.doc`), e.g. `WM-ROLE-PLAYER-MISMATCH`: `WmoopError.code` in Python and TypeScript,
+  `IWmoopError.Code` in C#. They still derive from the built-in exceptions (`ValueError`,
+  `ArgumentException`, `Error`, ...), and the code, not the exception type, is what the conformance
+  vectors compare. A unit of another dimension is `WM-UNIT-DIMENSION-MISMATCH`, one of the same
+  dimension but another kind (Angle for a Count) `WM-QUANTITYKIND-MISMATCH`, a broken invariant
+  `WM-INVARIANT-FAILED` and a role over its `cardinality_per_player` `WM-ROLE-DUPLICATE`.
 
 **Behaviour is hand-written**: algorithms like `can_drive` or `describe`, visitors, strategies and
 specifications. This is the *generation gap* from
@@ -67,16 +69,21 @@ regenerating the model never clobbers hand-written behaviour. Each language has 
 |---|---|---|
 | **C#** | `Wmoop.Transport/Moped.Gen.cs`: `public partial class Moped : Motorcycle` | another `partial class Moped`, under `$(WmoopSourceRoot)/Wmoop.Transport/` |
 | **Python** | `wmoop/transport.py`: `class Moped(*ext("transport", "Moped"), Motorcycle)` | an optional mixin `class MopedExt` in `wmoop_ext/transport.py` |
+| **TypeScript** | `wmoop/transport.ts`: `export class Moped extends Motorcycle` | `extend(Moped, { ... })` in a module that augments `wmoop/transport` (`declare module`), loaded once by the binding |
 
-Names and packages follow §4.2 / §4.5: one C# project / Python module per model module
-(`Wmoop.Transport`, `wmoop.transport`). Members are `WheelCount` in C# and `wheel_count` in Python.
-Objects are built with C# object initializers over `required` / `init` properties, or Python
-keyword arguments. Optional slots are nullable (`None`), never a default that would read as a fact.
+Names and packages follow §4.2 / §4.5: one C# project / Python module / TypeScript ES module per
+model module (`Wmoop.Transport`, `wmoop.transport`, `wmoop/transport`). Members are `WheelCount` in
+C#, `wheel_count` in Python and `wheelCount`, the model's own name, in TypeScript. Objects are built
+with C# object initializers over `required` / `init` properties, Python keyword arguments, or one
+TypeScript `<Name>Init` object. Optional slots are nullable (`None`, `null`), never a default that
+would read as a fact. A TypeScript enumeration is a frozen object whose values are the model ids,
+with a union type of the same name (`LicenceCategory.AM` is `"AM"`).
 
 ## Usage
 
-Requires **Python 3.10+** and **PyYAML** (`pip install -r requirements.txt`). Generating C# and
-building it additionally needs the **.NET SDK**.
+Requires **Python 3.10+** and **PyYAML** (`pip install -r requirements.txt`). Building the
+generated C# additionally needs the **.NET SDK**, and checking the generated TypeScript **Node.js**
+and the TypeScript compiler (`npm install --global typescript`).
 
 The canonical model is pinned as the git submodule `external/wmoop.doc`: clone with
 `git clone --recurse-submodules`, or run `git submodule update --init --recursive`.
@@ -88,6 +95,10 @@ python -m wmoop_tools --model external/wmoop.doc/model --lang python --out build
 # Generate the C# binding from the SAME model: build/cs/Wmoop.<Domain>/*.Gen.cs + Wmoop.Generated.sln
 python -m wmoop_tools --model external/wmoop.doc/model --lang csharp --out build/cs
 dotnet build build/cs/Wmoop.Generated.sln
+
+# ... and the TypeScript binding: build/ts/wmoop/<domain>.ts, checked by its own strict tsconfig.json
+python -m wmoop_tools --model external/wmoop.doc/model --lang typescript --out build/ts
+tsc -p build/ts
 ```
 
 (On Windows the launcher is usually `py`.)
@@ -105,7 +116,7 @@ python tests/test_conformance.py     # non-zero exit on failure
 
 ## Regenerating a binding repository
 
-A binding repository (`wmoop.net`, `wmoop.py`, ...) pins `external/wmoop.doc` and
+A binding repository (`wmoop.net`, `wmoop.py`, `wmoop.js`, ...) pins `external/wmoop.doc` and
 `external/wmoop.tools` as git submodules and commits the generator output under `generated/`.
 [`tools/regen_binding.py`](tools/regen_binding.py) is the only thing that writes it:
 
@@ -142,7 +153,8 @@ wmoop.tools/
 │   ├── generators/
 │   │   ├── common.py      # module paths, cardinalities, type resolution, the banner
 │   │   ├── python_gen.py  # -> the `wmoop` namespace package, one module per domain
-│   │   └── csharp_gen.py  # -> one Wmoop.<Domain> project per domain, partial classes
+│   │   ├── csharp_gen.py  # -> one Wmoop.<Domain> project per domain, partial classes
+│   │   └── typescript_gen.py  # -> one ES module per domain under wmoop/, extended with extend()
 │   └── templates/         # the runtime kernels (ConceptId, Quantity, Units, Entity, Role, errors)
 ├── tools/regen_binding.py # regenerate / verify a binding repo's generated/ (drift gate)
 ├── external/wmoop.doc/    # git submodule: the pinned canonical model
@@ -165,6 +177,7 @@ Individual checks, plus the validate-only mode and the generator self-test:
 ruff check . && ruff format --check .            # lint + formatting
 mypy                                             # static types
 pytest                                           # unit tests (self-contained fixture model)
+pytest tests/test_typescript_runtime.py          # compile and run the generated TypeScript (tsc, node)
 python -m wmoop_tools --model <dir> --check      # validate a model without generating
 python tools/check_generated.py                  # generators are deterministic & emit valid code
 ```

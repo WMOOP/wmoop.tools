@@ -32,7 +32,7 @@ def _run(lang: str, out: Path, *extra: str) -> subprocess.CompletedProcess:
     )
 
 
-@pytest.mark.parametrize("lang", ["python", "csharp"])
+@pytest.mark.parametrize("lang", ["python", "csharp", "typescript"])
 def test_regenerate_then_check(tmp_path, lang):
     out = tmp_path / "generated"
     first = _run(lang, out)
