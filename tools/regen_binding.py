@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Regenerate, or verify, the generated code of a WMOOP binding repository.
 
-A binding repository (``wmoop.net``, ``wmoop.py``, ...) pins two git submodules and commits the
-generator output under one directory:
+A binding repository (``wmoop.net``, ``wmoop.py``, ``wmoop.js``, ...) pins two git submodules and
+commits the generator output under one directory:
 
     external/wmoop.doc     the canonical model, with the validator and grammar that go with it
     external/wmoop.tools   this toolchain
@@ -42,9 +42,10 @@ sys.path.insert(0, str(ROOT))
 from wmoop_tools.compile import ModelError, validate  # noqa: E402
 from wmoop_tools.generators.csharp_gen import generate_csharp  # noqa: E402
 from wmoop_tools.generators.python_gen import generate_python  # noqa: E402
+from wmoop_tools.generators.typescript_gen import generate_typescript  # noqa: E402
 from wmoop_tools.loader import load_model  # noqa: E402
 
-GENERATORS = {"python": generate_python, "csharp": generate_csharp}
+GENERATORS = {"python": generate_python, "csharp": generate_csharp, "typescript": generate_typescript}
 SOURCE_FILE = "WMOOP_SOURCE.json"
 
 

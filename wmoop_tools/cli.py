@@ -25,6 +25,10 @@ def _generate(wm, lang: str, out: str) -> list:
         from .generators.csharp_gen import generate_csharp
 
         written += generate_csharp(wm, out)
+    if lang in ("typescript", "all"):
+        from .generators.typescript_gen import generate_typescript
+
+        written += generate_typescript(wm, out)
     return written
 
 
@@ -34,7 +38,9 @@ def main(argv=None) -> int:
         description="Compile the WML World Model and generate language bindings.",
     )
     ap.add_argument("--model", required=True, help="path to the model/ directory (WML source of truth)")
-    ap.add_argument("--lang", choices=["python", "csharp", "all"], default="python", help="target language")
+    ap.add_argument(
+        "--lang", choices=["python", "csharp", "typescript", "all"], default="python", help="target language"
+    )
     ap.add_argument("--out", help="output directory (required unless --check)")
     ap.add_argument(
         "--check",

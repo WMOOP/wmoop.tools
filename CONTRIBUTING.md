@@ -57,7 +57,9 @@ external repo. The end-to-end `tests/test_conformance.py` and `tests/test_regen_
 the canonical model, pinned as the `external/wmoop.doc` submodule (the regeneration test also
 needs `pip install -r external/wmoop.doc/schema/requirements.txt`). They **skip** automatically
 when the submodule is not checked out; `WMOOP_MODEL=/path/to/model` overrides the conformance
-model.
+model. `tests/test_typescript_runtime.py` compiles the generated TypeScript and runs it, so it needs
+Node.js and the TypeScript compiler (`tsc` on the `PATH`, or its path in `WMOOP_TSC`); it skips
+without them.
 
 ## Commit messages
 
@@ -76,7 +78,8 @@ generator targets or validation rules should use a scope, e.g. `feat(java): …`
 
 - **CI** (`.github/workflows/ci.yml`): lint, format, mypy, tests on Python 3.10–3.13 with coverage,
   generator determinism, a build, a blocking conformance run (plus the binding regeneration
-  script) against the pinned `external/wmoop.doc` model, and a job that generates the C# binding
-  and **compiles it with the .NET SDK**.
+  script) against the pinned `external/wmoop.doc` model, a job that generates the C# binding
+  and **compiles it with the .NET SDK**, and one that generates the TypeScript binding, **checks it
+  with `tsc`** and runs it with Node.js.
 - **Security** (`.github/workflows/security.yml`): `pip-audit` + `bandit`, also weekly.
 - **Commit lint** (`.github/workflows/commit-lint.yml`): Conventional Commits on the PR title and commits.
