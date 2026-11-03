@@ -222,7 +222,8 @@ def _property(wm, p, owner: str, here: str) -> list[str]:
             f"        get => {field};",
             f"        init => {field} = value is {{ Count: > 0 }}",
             "            ? value",
-            f'            : throw new ArgumentException("{name} needs at least one value.", nameof({name}));',
+            f'            : throw new {_KERNEL}.WmoopArgumentException("WM-CARDINALITY", "{name} needs at least one value.",'
+            f" nameof({name}));",
             "    }",
         ]
     if p.default is not None:

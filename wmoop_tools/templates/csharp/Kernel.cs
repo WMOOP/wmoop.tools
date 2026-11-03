@@ -8,13 +8,41 @@ using System.Reflection;
 
 namespace Wmoop.Core;
 
+/// <summary>
+/// An error the model defines. <see cref="Code"/> is its entry in the error-code registry
+/// (<c>wmoop.doc/conformance/error-codes.yaml</c>), the same in every binding, so callers and the
+/// conformance vectors tell errors apart by code rather than by message or exception type.
+/// </summary>
+public interface IWmoopError
+{
+    string Code { get; }
+}
+
+/// <summary>A value the model does not allow; still an <see cref="ArgumentException"/>.</summary>
+public sealed class WmoopArgumentException : ArgumentException, IWmoopError
+{
+    public WmoopArgumentException(string code, string message, string? paramName = null)
+        : base(message, paramName) => Code = code;
+
+    public string Code { get; }
+}
+
+/// <summary>An operation the object's current state does not allow; still an <see cref="InvalidOperationException"/>.</summary>
+public sealed class WmoopInvalidOperationException : InvalidOperationException, IWmoopError
+{
+    public WmoopInvalidOperationException(string code, string message)
+        : base(message) => Code = code;
+
+    public string Code { get; }
+}
+
 /// <summary>A stable WMOOP identifier, e.g. <c>wmoop.transport/Moped</c> or an individual's own id.</summary>
 public readonly struct ConceptId : IEquatable<ConceptId>
 {
     public ConceptId(string value)
     {
         if (string.IsNullOrWhiteSpace(value))
-            throw new ArgumentException("A ConceptId must be a non-empty identifier.", nameof(value));
+            throw new WmoopArgumentException("WM-ID-INVALID", "A ConceptId must be a non-empty identifier.", nameof(value));
         Value = value;
     }
 
@@ -35,7 +63,7 @@ public readonly struct Quantity : IEquatable<Quantity>
     public Quantity(double value, string unit)
     {
         if (string.IsNullOrWhiteSpace(unit))
-            throw new ArgumentException("A Quantity must carry a unit.", nameof(unit));
+            throw new WmoopArgumentException("WM-UNIT-MISSING", "A Quantity must carry a unit.", nameof(unit));
         Value = value;
         Unit = unit;
     }
@@ -70,9 +98,17 @@ public interface IRole
 public abstract class Entity : IHasRoles
 {
     private readonly List<IRole> _roles = new();
+    private readonly string _name = string.Empty;
 
     public required ConceptId Id { get; init; }
-    public required string Name { get; init; }
+
+    public required string Name
+    {
+        get => _name;
+        init => _name = string.IsNullOrWhiteSpace(value)
+            ? throw new WmoopArgumentException("WM-REQUIRED-MISSING", "An entity needs a non-empty name.", nameof(Name))
+            : value;
+    }
 
     public IReadOnlyCollection<IRole> Roles => _roles;
 
@@ -81,7 +117,8 @@ public abstract class Entity : IHasRoles
     {
         ArgumentNullException.ThrowIfNull(role);
         if (role.PlayedBy.Length > 0 && !IsA(role.PlayedBy))
-            throw new InvalidOperationException($"{role.GetType().Name} is played by {role.PlayedBy}, which {GetType().Name} is not.");
+            throw new WmoopInvalidOperationException("WM-ROLE-PLAYER-MISMATCH",
+                $"{role.GetType().Name} is played by {role.PlayedBy}, which {GetType().Name} is not.");
         role.AttachTo(this);
         _roles.Add(role);
         return role;
@@ -176,7 +213,7 @@ public abstract class Role : IRole
     internal void AttachTo(Entity subject)
     {
         if (Subject is not null)
-            throw new InvalidOperationException("Role is already attached to a subject.");
+            throw new WmoopInvalidOperationException("WM-ROLE-ALREADY-ATTACHED", "Role is already attached to a subject.");
         Subject = subject ?? throw new ArgumentNullException(nameof(subject));
     }
 }

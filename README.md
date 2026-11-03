@@ -40,7 +40,12 @@ Generators emit **data**:
   only inside one module, so a base package never depends on the packages that extend it;
 - required and `1..*` checks;
 - the role machinery: every entity can play roles by composition, and a role refuses a subject that
-  is not its `played_by` type.
+  is not its `played_by` type;
+- errors that carry their code from the model's error-code registry
+  ([`conformance/error-codes.yaml`](https://github.com/WMOOP/wmoop.doc/blob/main/conformance/error-codes.yaml)
+  in `wmoop.doc`), e.g. `WM-ROLE-PLAYER-MISMATCH`: `WmoopError.code` in Python, `IWmoopError.Code`
+  in C#. They still derive from the built-in exceptions (`ValueError`, `ArgumentException`, ...), and
+  the code, not the exception type, is what the conformance vectors compare.
 
 **Behaviour is hand-written**: algorithms like `can_drive` or `describe`, visitors, strategies and
 specifications. This is the *generation gap* from
@@ -127,7 +132,7 @@ wmoop.tools/
 │   │   ├── common.py      # module paths, cardinalities, type resolution, the banner
 │   │   ├── python_gen.py  # -> the `wmoop` namespace package, one module per domain
 │   │   └── csharp_gen.py  # -> one Wmoop.<Domain> project per domain, partial classes
-│   └── templates/         # the runtime kernels, emitted verbatim (ConceptId, Quantity, Entity, Role)
+│   └── templates/         # the runtime kernels, emitted verbatim (ConceptId, Quantity, Entity, Role, errors)
 ├── tools/regen_binding.py # regenerate / verify a binding repo's generated/ (drift gate)
 ├── external/wmoop.doc/    # git submodule: the pinned canonical model
 ├── tests/test_conformance.py
