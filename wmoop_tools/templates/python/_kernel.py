@@ -1,4 +1,4 @@
-"""The runtime kernel every generated WMOOP module imports: identity, quantities, roles, extensions.
+"""The runtime kernel every generated WMOOP module imports: errors, identity, quantities, roles, extensions.
 
 ``wmoop.core`` re-exports the public names, so a consumer writes ``from wmoop.core import Quantity``.
 """
@@ -12,6 +12,29 @@ from dataclasses import dataclass
 from typing import Any, TypeVar
 
 
+class WmoopError(Exception):
+    """An error the model defines. ``code`` is its entry in the error-code registry
+    (``wmoop.doc/conformance/error-codes.yaml``), the same in every binding, so callers and the
+    conformance vectors tell errors apart by code rather than by message or exception type.
+    """
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+class WmoopValueError(WmoopError, ValueError):
+    """A value the model does not allow; still a ``ValueError``."""
+
+
+class WmoopTypeError(WmoopError, TypeError):
+    """A type the model does not allow; still a ``TypeError``."""
+
+
+class WmoopStateError(WmoopError, RuntimeError):
+    """An operation the object's current state does not allow; still a ``RuntimeError``."""
+
+
 @dataclass(frozen=True)
 class ConceptId:
     """A stable WMOOP identifier, e.g. ``wmoop.transport/Moped`` or an individual's own id."""
@@ -20,7 +43,7 @@ class ConceptId:
 
     def __post_init__(self) -> None:
         if not isinstance(self.value, str) or not self.value.strip():
-            raise ValueError("A ConceptId must be a non-empty identifier.")
+            raise WmoopValueError("WM-ID-INVALID", "A ConceptId must be a non-empty identifier.")
 
     def __str__(self) -> str:
         return self.value
@@ -35,7 +58,7 @@ class Quantity:
 
     def __post_init__(self) -> None:
         if not isinstance(self.unit, str) or not self.unit.strip():
-            raise ValueError("A Quantity must carry a unit.")
+            raise WmoopValueError("WM-UNIT-MISSING", "A Quantity must carry a unit.")
 
     def __str__(self) -> str:
         v = self.value
@@ -57,10 +80,12 @@ class Entity:
 
     def __init__(self, id: ConceptId | str, name: str) -> None:
         if vars(type(self)).get("WM_KIND") == "abstract":
-            raise TypeError(f"{type(self).__name__} is abstract and cannot be instantiated directly.")
+            raise WmoopTypeError(
+                "WM-ABSTRACT-INSTANTIATION", f"{type(self).__name__} is abstract and cannot be instantiated directly."
+            )
         self._wm_id = id if isinstance(id, ConceptId) else ConceptId(id)
         if not isinstance(name, str) or not name.strip():
-            raise ValueError("An entity needs a non-empty name.")
+            raise WmoopValueError("WM-REQUIRED-MISSING", "An entity needs a non-empty name.")
         self._wm_name = name
         self._wm_roles: list[Role] = []
 
@@ -84,7 +109,10 @@ class Entity:
         """Attach ``role`` by composition; the role's ``played_by`` type must be one of this entity's types."""
         played_by = type(role).WM_PLAYED_BY
         if played_by and not self.is_a(played_by):
-            raise TypeError(f"{type(role).__name__} is played by {played_by}, which {type(self).__name__} is not.")
+            raise WmoopTypeError(
+                "WM-ROLE-PLAYER-MISMATCH",
+                f"{type(role).__name__} is played by {played_by}, which {type(self).__name__} is not.",
+            )
         role._wm_attach(self)
         self._wm_roles.append(role)
         return role
@@ -121,7 +149,7 @@ class Role:
 
     def _wm_attach(self, subject: Entity) -> None:
         if self._wm_subject is not None:
-            raise RuntimeError("Role is already attached to a subject.")
+            raise WmoopStateError("WM-ROLE-ALREADY-ATTACHED", "Role is already attached to a subject.")
         self._wm_subject = subject
 
 
@@ -146,7 +174,10 @@ class _End:
 
     def check(self, item: object) -> None:
         if not isinstance(item, self.target()):
-            raise TypeError(f"{self.name} relates to {self.target().__name__}, not to {type(item).__name__}.")
+            raise WmoopTypeError(
+                "WM-RELATION-TARGET-TYPE",
+                f"{self.name} relates to {self.target().__name__}, not to {type(item).__name__}.",
+            )
 
     def back(self, item: object) -> _End | None:
         """The opposite end, as declared on ``item``'s class."""

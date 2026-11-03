@@ -2,7 +2,7 @@
 
 Layout under ``out_dir`` (a binding's ``generated/``)::
 
-    wmoop/_kernel.py      identity, quantities, roles and the extension hook (from templates/python)
+    wmoop/_kernel.py      errors, identity, quantities, roles and the extension hook (from templates/python)
     wmoop/core.py         the wmoop.core module, plus the kernel's public names
     wmoop/<domain>.py     one per WML module, e.g. wmoop/transport.py
 
@@ -50,7 +50,11 @@ from .common import (
 # Members of Entity / Role that a property must not shadow.
 _KERNEL_MEMBERS = frozenset({"id", "name", "roles", "is_a", "add_role", "has_role", "get_role", "role_type", "subject"})
 _PRIMITIVE = {"string": "str", "integer": "int", "decimal": "float", "boolean": "bool", "date": "datetime.date"}
-_KERNEL_IMPORT = "from wmoop._kernel import ConceptId, Entity, Many, One, Quantity, Role, ext  # noqa: F401"
+_KERNEL_IMPORT = (
+    "from wmoop._kernel import (  # noqa: F401\n"
+    "    ConceptId, Entity, Many, One, Quantity, Role, WmoopError, WmoopStateError, WmoopTypeError, WmoopValueError, ext,\n"
+    ")"
+)
 _EXT_HINT = "Add behaviour as a mixin <Name>Ext in wmoop_ext.{module} (see wmoop_tools/generators/python_gen.py)."
 
 
@@ -122,11 +126,17 @@ def _store(wm, p, here: str) -> list[str]:
         items = f"tuple({enum}(v) for v in {name})" if enum else f"tuple({name})"
         lines = [f"        {attr} = {items}"]
         if card.required:
-            lines += [f"        if not {attr}:", f'            raise ValueError("{name} needs at least one value.")']
+            lines += [
+                f"        if not {attr}:",
+                f'            raise WmoopValueError("WM-CARDINALITY", "{name} needs at least one value.")',
+            ]
         return lines
     lines = []
     if card.required and p.default is None:
-        lines += [f"        if {name} is None:", f'            raise ValueError("{name} is required.")']
+        lines += [
+            f"        if {name} is None:",
+            f'            raise WmoopValueError("WM-REQUIRED-MISSING", "{name} is required.")',
+        ]
     if enum and (card.required or p.default is not None):
         value = f"{enum}({name})"
     elif enum:
@@ -272,6 +282,6 @@ def generate_python(wm, out_dir: str) -> list:
         written.append(write(os.path.join(pkg, dotted(m.id) + ".py"), _module_source(wm, m)))
     if CORE_MODULE not in wm.modules:
         core = [banner("#"), repr("wmoop.core - the kernel's public names (the model has no wmoop.core module)."), ""]
-        core.append("from wmoop._kernel import ConceptId, Entity, Quantity, Role  # noqa: F401")
+        core.append(_KERNEL_IMPORT)
         written.append(write(os.path.join(pkg, "core.py"), "\n".join(core)))
     return written

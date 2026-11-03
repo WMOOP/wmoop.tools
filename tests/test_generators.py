@@ -74,6 +74,58 @@ def test_python_required_slots_are_enforced(generated_python):
         a.Person("wm:p", "Ada", label="person", full_name=None)
 
 
+def _code(fn) -> str:
+    """The registry code of the WmoopError that ``fn`` raises."""
+    with pytest.raises(Exception) as caught:  # the code, not the exception type, is under test
+        fn()
+    return getattr(caught.value, "code", f"no code: {type(caught.value).__name__}: {caught.value}")
+
+
+def test_python_errors_carry_their_registry_code(generated_python):
+    a, s, core = generated_python.animals, generated_python.society, generated_python.core
+
+    def person(id="wm:p", name="Ada"):
+        return a.Person(id, name, label="person", full_name="Ada")
+
+    def attach_twice():
+        citizen = s.Citizen(citizen_id="RO-1")
+        person("wm:p1").add_role(citizen)
+        person("wm:p2").add_role(citizen)
+
+    class Rock(generated_python.base.Thing):  # hand-written, so instantiable
+        pass
+
+    assert _code(lambda: core.ConceptId(" ")) == "WM-ID-INVALID"
+    assert _code(lambda: core.Quantity(1, "")) == "WM-UNIT-MISSING"
+    assert _code(lambda: a.Animal("wm:x", "x", label="x")) == "WM-ABSTRACT-INSTANTIATION"
+    assert _code(lambda: person(name=" ")) == "WM-REQUIRED-MISSING"
+    assert _code(lambda: a.Person("wm:p", "Ada", label="p", full_name=None)) == "WM-REQUIRED-MISSING"
+    assert _code(attach_twice) == "WM-ROLE-ALREADY-ATTACHED"
+    assert (
+        _code(lambda: Rock("wm:r", "r", label="r").add_role(s.Citizen(citizen_id="RO-1"))) == "WM-ROLE-PLAYER-MISMATCH"
+    )
+    assert _code(lambda: person().knows.add("Bob")) == "WM-RELATION-TARGET-TYPE"
+    # Coded errors are still the built-in types callers already catch.
+    assert issubclass(core.WmoopValueError, ValueError) and issubclass(core.WmoopTypeError, TypeError)
+    assert issubclass(core.WmoopStateError, RuntimeError) and issubclass(core.WmoopValueError, core.WmoopError)
+
+
+def test_python_at_least_one_value_is_a_cardinality_error(tmp_path, isolated_imports):
+    wm = _model(
+        tmp_path,
+        "concepts:\n"
+        "  - id: wmoop.cite/Citation\n"
+        "    kind: concrete\n"
+        "    properties:\n"
+        "      - {id: wmoop.cite/Citation#authors, name: authors, type: string, cardinality: '1..*'}\n",
+    )
+    out = isolated_imports / "gen"
+    generate_python(wm, str(out))
+    cite = import_generated(out, modules=("cite",)).cite
+    assert cite.Citation("wm:c", "c", authors=["Ada"]).authors == ("Ada",)
+    assert _code(lambda: cite.Citation("wm:c", "c", authors=[])) == "WM-CARDINALITY"
+
+
 def test_python_role_attached_by_composition(generated_python):
     a, s = generated_python.animals, generated_python.society
     person = a.Person("wm:p", "Ada", label="person", full_name="Ada")
@@ -277,6 +329,32 @@ def test_python_cross_module_inverse_is_not_generated(generated_python):
     citizen.resides_in = place  # the forward end works
     assert citizen.resides_in is place
     assert not hasattr(generated_python.base.Thing, "residents")  # base never depends on society
+
+
+def test_csharp_errors_carry_their_registry_code(tmp_path):
+    wm = _model(
+        tmp_path,
+        "concepts:\n"
+        "  - id: wmoop.cite/Citation\n"
+        "    kind: concrete\n"
+        "    properties:\n"
+        "      - {id: wmoop.cite/Citation#authors, name: authors, type: string, cardinality: '1..*'}\n",
+    )
+    out = tmp_path / "gen"
+    generate_csharp(wm, str(out))
+    kernel = (out / "Wmoop.Core" / "Kernel.Gen.cs").read_text(encoding="utf-8")
+    assert "public sealed class WmoopArgumentException : ArgumentException, IWmoopError" in kernel
+    assert "public sealed class WmoopInvalidOperationException : InvalidOperationException, IWmoopError" in kernel
+    for code in (
+        "WM-ID-INVALID",
+        "WM-UNIT-MISSING",
+        "WM-REQUIRED-MISSING",
+        "WM-ROLE-PLAYER-MISMATCH",
+        "WM-ROLE-ALREADY-ATTACHED",
+    ):
+        assert f'"{code}"' in kernel
+    citation = (out / "Wmoop.Cite" / "Citation.Gen.cs").read_text(encoding="utf-8")
+    assert ': throw new global::Wmoop.Core.WmoopArgumentException("WM-CARDINALITY", ' in citation
 
 
 def test_csharp_relation_members(world_model, tmp_path):
