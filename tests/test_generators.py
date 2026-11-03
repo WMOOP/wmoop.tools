@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 import filecmp
 import importlib
 
@@ -26,10 +27,26 @@ def _assert_identical(a, b):
 
 def _model(tmp_path, yaml_text: str):
     """A one-module model ``wmoop.cite`` written from ``yaml_text``."""
-    folder = tmp_path / "model" / "cite"
-    folder.mkdir(parents=True)
-    (folder / "cite.wml.yaml").write_text("module:\n  id: wmoop.cite\n  version: 1.0.0\n" + yaml_text, encoding="utf-8")
+    return _models(tmp_path, cite=yaml_text)
+
+
+def _models(tmp_path, **modules: str):
+    """A model with a module ``wmoop.<name>`` per keyword, written from its YAML text."""
+    for name, yaml_text in modules.items():
+        folder = tmp_path / "model" / name
+        folder.mkdir(parents=True)
+        header = f"module:\n  id: wmoop.{name}\n  version: 1.0.0\n"
+        (folder / f"{name}.wml.yaml").write_text(header + yaml_text, encoding="utf-8")
     return validate(load_model(str(tmp_path / "model")))
+
+
+_BOOK = (
+    "concepts:\n"
+    "  - id: wmoop.cite/Book\n"
+    "    kind: concrete\n"
+    "    properties:\n"
+    "      - {id: wmoop.cite/Book#pages, name: pages, type: integer}\n"
+)
 
 
 # --- Python binding ------------------------------------------------------------
@@ -253,8 +270,7 @@ def test_csharp_types_are_partial_with_init_properties(world_model, tmp_path):
     assert "public DateOnly? DateOfBirth { get; init; }" in person
     animal = (tmp_path / "Wmoop.Animals" / "Animal.Gen.cs").read_text(encoding="utf-8")
     assert "public abstract partial class Animal : global::Wmoop.Base.Thing" in animal
-    assert "public long? LegCount { get; init; }" in animal
-    assert "public global::Wmoop.Core.Quantity? Mass { get; init; }" in animal
+    assert "public global::Wmoop.Core.Quantity? Mass\n" in animal  # an init accessor checks the unit
     citizen = (tmp_path / "Wmoop.Society" / "Citizen.Gen.cs").read_text(encoding="utf-8")
     assert "public partial class Citizen : global::Wmoop.Core.Role" in citizen
     assert 'public const string WmPlayedBy = "wmoop.animals/Person";' in citizen
@@ -351,10 +367,13 @@ def test_csharp_errors_carry_their_registry_code(tmp_path):
         "WM-REQUIRED-MISSING",
         "WM-ROLE-PLAYER-MISMATCH",
         "WM-ROLE-ALREADY-ATTACHED",
+        "WM-ROLE-DUPLICATE",
+        "WM-UNIT-DIMENSION-MISMATCH",
+        "WM-QUANTITYKIND-MISMATCH",
     ):
         assert f'"{code}"' in kernel
     citation = (out / "Wmoop.Cite" / "Citation.Gen.cs").read_text(encoding="utf-8")
-    assert ': throw new global::Wmoop.Core.WmoopArgumentException("WM-CARDINALITY", ' in citation
+    assert 'throw new global::Wmoop.Core.WmoopArgumentException("WM-CARDINALITY", ' in citation
 
 
 def test_csharp_relation_members(world_model, tmp_path):
@@ -370,3 +389,278 @@ def test_csharp_relation_members(world_model, tmp_path):
     assert "item => item.Knows.Add(this)," in person
     citizen = (tmp_path / "Wmoop.Society" / "Citizen.Gen.cs").read_text(encoding="utf-8")
     assert "public global::Wmoop.Base.Thing? ResidesIn { get; set; }" in citizen
+
+
+# --- Individuals ---------------------------------------------------------------
+
+
+def test_python_individuals_are_instances_on_their_class(generated_python):
+    a, core = generated_python.animals, generated_python.core
+    ada = a.Person.Ada
+    assert isinstance(ada, a.Person)
+    assert (str(ada.id), ada.name, ada.full_name, ada.leg_count) == (
+        "wmoop.animals/Ada",
+        "Ada Lovelace",
+        "Augusta Ada King",
+        2,
+    )
+    assert ada.sex is a.Sex.female and ada.date_of_birth == datetime.date(1815, 12, 10)
+    assert ada.mass == core.Quantity(55, "kg")  # a quantity value is in the property's unit
+    assert (core.Unit.Gram.symbol, core.Unit.Gram.factor, core.Unit.Gram.offset) == ("g", 0.001, 0)  # defaults apply
+    assert core.QuantityKind.Mass.canonical_unit == "wmoop.core/Kilogram"
+
+
+def test_csharp_individuals_are_static_properties(world_model, tmp_path):
+    generate_csharp(world_model, str(tmp_path))
+    person = (tmp_path / "Wmoop.Animals" / "Person.Gen.cs").read_text(encoding="utf-8")
+    assert "public static Person Ada { get; } = new()" in person
+    assert 'Name = "Ada Lovelace",' in person
+    assert 'Mass = new global::Wmoop.Core.Quantity(55, "kg"),' in person
+    assert "Sex = global::Wmoop.Animals.Sex.female," in person  # qualified: the property Sex hides the type Sex
+    assert "DateOfBirth = new DateOnly(1815, 12, 10)," in person
+    unit = (tmp_path / "Wmoop.Core" / "Unit.Gen.cs").read_text(encoding="utf-8")
+    assert "public static Unit Gram { get; } = new()" in unit
+
+
+def test_an_individual_can_refer_to_another(tmp_path, isolated_imports):
+    wm = _model(
+        tmp_path,
+        "concepts:\n"
+        "  - {id: wmoop.cite/Author, kind: concrete}\n"
+        "  - id: wmoop.cite/Book\n"
+        "    kind: concrete\n"
+        "    properties:\n"
+        "      - {id: wmoop.cite/Book#author, name: author, type: wmoop.cite/Author}\n"
+        "individuals:\n"
+        "  - {id: wmoop.cite/Odyssey, name: Odyssey, instance_of: wmoop.cite/Book, values: {author: wmoop.cite/Homer}}\n"
+        "  - {id: wmoop.cite/Homer, name: Homer, instance_of: wmoop.cite/Author}\n",
+    )
+    out = isolated_imports / "gen"
+    generate_python(wm, str(out))
+    cite = import_generated(out, modules=("cite",)).cite
+    assert cite.Book.Odyssey.author is cite.Author.Homer  # emitted after the individual it names
+    generate_csharp(wm, str(tmp_path / "cs"))
+    book = (tmp_path / "cs" / "Wmoop.Cite" / "Book.Gen.cs").read_text(encoding="utf-8")
+    assert "Author = global::Wmoop.Cite.Author.Homer," in book
+
+
+_SCHOLAR = (
+    "concepts:\n"
+    "  - id: wmoop.cite/Scholar\n"
+    "    kind: concrete\n"
+    "    properties:\n"
+    "      - {id: wmoop.cite/Scholar#mentor, name: mentor, type: wmoop.cite/Scholar}\n"
+    "individuals:\n"
+    "  - {id: wmoop.cite/Ada, name: Ada, instance_of: wmoop.cite/Scholar, values: {mentor: wmoop.cite/Babbage}}\n"
+)
+
+
+def test_csharp_individual_follows_the_ones_it_refers_to(tmp_path):
+    wm = _model(tmp_path, _SCHOLAR + "  - {id: wmoop.cite/Babbage, name: Babbage, instance_of: wmoop.cite/Scholar}\n")
+    generate_csharp(wm, str(tmp_path / "cs"))
+    scholar = (tmp_path / "cs" / "Wmoop.Cite" / "Scholar.Gen.cs").read_text(encoding="utf-8")
+    # static initializers run in order: Ada's would read a Babbage declared after it as null
+    assert scholar.index("public static Scholar Babbage") < scholar.index("public static Scholar Ada")
+
+
+def test_individuals_that_refer_to_each_other_in_a_cycle_are_a_model_error(tmp_path):
+    babbage = (
+        "{id: wmoop.cite/Babbage, name: Babbage, instance_of: wmoop.cite/Scholar, values: {mentor: wmoop.cite/Ada}}"
+    )
+    wm = _model(tmp_path, _SCHOLAR + f"  - {babbage}\n")
+    with pytest.raises(ModelError, match="refer to each other in a cycle"):
+        generate_csharp(wm, str(tmp_path / "cs"))
+
+
+def test_csharp_individual_named_like_a_member_is_renamed(tmp_path):
+    wm = _model(
+        tmp_path,
+        "concepts:\n"
+        "  - id: wmoop.cite/Style\n"
+        "    kind: concrete\n"
+        "    properties:\n"
+        "      - {id: wmoop.cite/Style#format, name: format, type: string}\n"
+        "individuals:\n"
+        "  - {id: wmoop.cite/Format, name: Format, instance_of: wmoop.cite/Style, values: {format: author-date}}\n",
+    )
+    generate_csharp(wm, str(tmp_path / "cs"))
+    style = (tmp_path / "cs" / "Wmoop.Cite" / "Style.Gen.cs").read_text(encoding="utf-8")
+    assert "public static Style FormatIndividual { get; } = new()" in style
+    assert 'Format = "author-date",' in style
+
+
+def test_an_individual_value_of_the_wrong_type_is_a_model_error(tmp_path):
+    odyssey = "{id: wmoop.cite/Odyssey, name: Odyssey, instance_of: wmoop.cite/Book, values: {pages: lots}}"
+    wm = _model(tmp_path, _BOOK + f"individuals:\n  - {odyssey}\n")
+    with pytest.raises(ModelError, match=r"'lots' is not a value of wmoop\.cite/Book#pages"):
+        generate_csharp(wm, str(tmp_path / "out"))
+
+
+def test_an_individual_is_declared_with_its_concept(tmp_path):
+    wm = _models(
+        tmp_path,
+        base="concepts:\n  - {id: wmoop.base/Rock, kind: concrete}\n",
+        cite="individuals:\n  - {id: wmoop.cite/Stone, name: Stone, instance_of: wmoop.base/Rock}\n",
+    )
+    with pytest.raises(ModelError, match=r"must be declared in wmoop\.base"):
+        generate_python(wm, str(tmp_path / "py"))
+    with pytest.raises(ModelError, match=r"must be declared in wmoop\.base"):
+        generate_csharp(wm, str(tmp_path / "cs"))
+
+
+# --- Units ---------------------------------------------------------------------
+
+
+def test_python_quantity_accepts_any_unit_of_its_kind(generated_python):
+    a, Quantity = generated_python.animals, generated_python.core.Quantity
+
+    def person(mass):
+        return a.Person("wm:p", "P", label="p", full_name="P", mass=mass)
+
+    assert person(Quantity(55000, "g")).mass == Quantity(55000, "g")  # kept as given
+    with pytest.raises(ValueError, match="mass must be in kg or another Mass unit; m measures Length"):
+        person(Quantity(1.7, "m"))
+    with pytest.raises(ValueError, match="lb is not in the unit catalogue"):
+        person(Quantity(120, "lb"))
+    with pytest.raises(TypeError, match="mass is a quantity in kg, not int"):
+        person(55)
+
+
+def test_python_unit_errors_carry_their_registry_code(generated_python):
+    a, core = generated_python.animals, generated_python.core
+    Quantity, check_quantity = core.Quantity, importlib.import_module("wmoop._kernel").check_quantity
+
+    def code(fail) -> str:
+        with pytest.raises(core.WmoopError) as raised:
+            fail()
+        return raised.value.code
+
+    def person(mass):
+        return a.Person("wm:p", "P", label="p", full_name="P", mass=mass)
+
+    assert code(lambda: person(Quantity(1.7, "m"))) == "WM-UNIT-DIMENSION-MISMATCH"
+    assert code(lambda: person(Quantity(120, "lb"))) == "WM-UNIT-DIMENSION-MISMATCH"
+    assert code(lambda: person(55)) == "WM-TYPE-MISMATCH"
+    # Count and Angle are both dimensionless: the same dimension, but not the same kind
+    assert code(lambda: check_quantity(Quantity(1, "rad"), "one", "wmoop.core/Count", "count")) == (
+        "WM-QUANTITYKIND-MISMATCH"
+    )
+    assert code(lambda: Quantity(1, "rad").in_("one")) == "WM-QUANTITYKIND-MISMATCH"
+    assert code(lambda: Quantity(1, "kg").in_("m")) == "WM-UNIT-DIMENSION-MISMATCH"
+
+
+def test_python_quantity_converts_within_its_kind(generated_python):
+    Quantity = generated_python.core.Quantity
+    assert Quantity(55000, "g").in_("kg") == pytest.approx(55)
+    assert Quantity(20, "degC").in_("K") == pytest.approx(293.15)
+    assert Quantity(300, "K").in_("degC") == pytest.approx(26.85)
+    with pytest.raises(ValueError, match="Cannot express 1 kg in m"):
+        Quantity(1, "kg").in_("m")
+    assert str(Quantity(5.97e24, "kg")) == "5.97e+24 kg"
+    assert str(Quantity(45.0, "km/h")) == "45 km/h"
+
+
+def test_python_without_a_catalogue_only_the_model_unit_is_accepted(tmp_path, isolated_imports):
+    wm = _model(
+        tmp_path,
+        "concepts:\n"
+        "  - id: wmoop.cite/Book\n"
+        "    kind: concrete\n"
+        "    properties:\n"
+        "      - {id: wmoop.cite/Book#weight, name: weight, unit: kg}\n",
+    )
+    out = isolated_imports / "gen"
+    generate_python(wm, str(out))
+    gen = import_generated(out, modules=("cite",))
+    Book, Quantity = gen.cite.Book, gen.core.Quantity
+    assert Book("wm:b", "b", weight=Quantity(1, "kg")).weight == Quantity(1, "kg")
+    with pytest.raises(ValueError, match="weight must be in kg, not in g"):
+        Book("wm:b", "b", weight=Quantity(1000, "g"))
+
+
+def test_unit_catalogue_is_generated_for_both_kernels(world_model, tmp_path):
+    generate_python(world_model, str(tmp_path / "py"))
+    kernel = (tmp_path / "py" / "wmoop" / "_kernel.py").read_text(encoding="utf-8")
+    assert "        'g': ('wmoop.core/Mass', 0.001, 0),\n" in kernel
+    generate_csharp(world_model, str(tmp_path / "cs"))
+    units = (tmp_path / "cs" / "Wmoop.Core" / "Units.Gen.cs").read_text(encoding="utf-8")
+    assert '            ("g", "wmoop.core/Mass", 0.001, 0),\n' in units
+    assert '            ("degC", "wmoop.core/Temperature", 1, 273.15),\n' in units
+    assert '            ("wmoop.core/Mass", "0 1 0 0 0 0 0"),\n' in units  # the kinds' SI dimensions
+    assert "        'wmoop.core/Angle': (0, 0, 0, 0, 0, 0, 0),\n" in kernel
+    animal = (tmp_path / "cs" / "Wmoop.Animals" / "Animal.Gen.cs").read_text(encoding="utf-8")
+    assert 'global::Wmoop.Core.Units.Require(value, "kg", "wmoop.core/Mass", nameof(Mass));' in animal
+
+
+# --- Roles: cardinality_per_player ----------------------------------------------
+
+
+def test_python_cardinality_per_player_limits_a_role(generated_python):
+    a, s = generated_python.animals, generated_python.society
+    person = a.Person("wm:p", "Ada", label="person", full_name="Ada")
+    person.add_role(s.Citizen(citizen_id="RO-1"))
+    second = s.Citizen(citizen_id="RO-2")
+    with pytest.raises(RuntimeError, match="Person already plays 1 Citizen role") as raised:
+        person.add_role(second)
+    assert raised.value.code == "WM-ROLE-DUPLICATE"
+    assert len(person.roles) == 1 and second.subject is None  # the refused role stays free
+    other = a.Person("wm:o", "Bob", label="person", full_name="Bob")
+    assert other.add_role(second).subject is other  # the limit is per player
+
+
+def test_csharp_role_declares_its_per_player_limit(world_model, tmp_path):
+    generate_csharp(world_model, str(tmp_path))
+    citizen = (tmp_path / "Wmoop.Society" / "Citizen.Gen.cs").read_text(encoding="utf-8")
+    assert "    public override int? MaxPerPlayer => 1;\n" in citizen
+
+
+# --- Invariants ----------------------------------------------------------------
+
+
+def test_python_simple_invariants_are_checked_in_the_constructor(generated_python):
+    a, Quantity = generated_python.animals, generated_python.core.Quantity
+
+    def person(**values):
+        return a.Person("wm:p", "P", label="p", full_name="P", **values)
+
+    with pytest.raises(ValueError, match=r"negative number of legs\. \[legs-nonneg: self\.legCount >= 0\]") as raised:
+        person(leg_count=-1)
+    assert raised.value.code == "WM-INVARIANT-FAILED"
+    with pytest.raises(ValueError, match=r"at most two legs\. \[two-legs-at-most: self\.legCount <= 2\]"):
+        person(leg_count=3)  # Person narrows the property it inherits
+    with pytest.raises(ValueError, match=r"Animal must satisfy self\.mass > 0\. \[positive-mass: self\.mass > 0\]"):
+        person(mass=Quantity(0, "g"))
+    assert person().leg_count is None  # an absent value breaks no invariant
+
+
+def test_csharp_invariant_on_an_inherited_property_overrides_it(world_model, tmp_path):
+    generate_csharp(world_model, str(tmp_path))
+    animal = (tmp_path / "Wmoop.Animals" / "Animal.Gen.cs").read_text(encoding="utf-8")
+    assert "    public virtual long? LegCount\n" in animal
+    assert "            if (value is not null && !(value >= 0))\n" in animal
+    assert '            if (value is not null && !(value.Value.In("kg") > 0))\n' in animal
+    person = (tmp_path / "Wmoop.Animals" / "Person.Gen.cs").read_text(encoding="utf-8")
+    assert "    public override long? LegCount\n" in person
+    assert "            base.LegCount = value;\n            if (value is not null && !(value <= 2))\n" in person
+    assert 'throw new global::Wmoop.Core.WmoopArgumentException("WM-INVARIANT-FAILED", "A person has at most' in person
+
+
+def test_invariants_beyond_the_simple_form_wait_for_wmx(world_model, tmp_path):
+    generate_python(world_model, str(tmp_path / "py"))
+    generate_csharp(world_model, str(tmp_path / "cs"))
+    note = "Invariant knows-everyone waits for WMX (ADR 0002): forall p in self.knows: p.knows contains self"
+    assert f"    # {note}\n" in (tmp_path / "py" / "wmoop" / "animals.py").read_text(encoding="utf-8")
+    assert f"    // {note}\n" in (tmp_path / "cs" / "Wmoop.Animals" / "Person.Gen.cs").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    ("expr", "error"),
+    [
+        ("self.pagez > 0", "there is no property 'pagez'"),
+        ("self.pages == 'many'", r"pages \(integer\) cannot be compared with 'many' using =="),
+    ],
+)
+def test_a_simple_invariant_that_cannot_be_checked_is_a_model_error(tmp_path, expr, error):
+    wm = _model(tmp_path, _BOOK + "    invariants:\n" + f'      - {{id: check, expr: "{expr}"}}\n')
+    with pytest.raises(ModelError, match=error):
+        generate_python(wm, str(tmp_path / "out"))

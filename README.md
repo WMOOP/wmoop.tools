@@ -26,7 +26,8 @@ model/*.wml.yaml  ──load──▶  WorldModel  ──validate──▶  (ok)
    several files) into a typed in-memory model.
 2. **Validate** (`compile.py`) — enforce the structural invariants: `extends`/`played_by` resolve,
    the module dependency graph is **acyclic** (Inv. 5), inheritance is acyclic and **shallow**
-   (≤ 6, Inv. 3).
+   (≤ 6, Inv. 3), a unit is one of the `wmoop.core` catalogue, of its property's quantity kind (R5),
+   and an individual sets only properties of its concrete concept, every required one included.
 3. **Generate** (`generators/`) — emit idiomatic source per target.
 
 ### What is generated — and what is not
@@ -38,14 +39,24 @@ Generators emit **data**:
   end (`city.part_of = county` / `city.PartOf = county`), a to-many end a live collection whose
   add/remove do the same (`owner.owns.add(moped)` / `owner.Owns.Add(moped)`). An inverse is generated
   only inside one module, so a base package never depends on the packages that extend it;
-- required and `1..*` checks;
+- the individuals, as instances on the class they instantiate: `Planet.Earth`, `Unit.Kilometre`,
+  `QuantityKind.Speed` (a static property in C#, a class attribute in Python);
+- the constructor checks: required and `1..*` slots; a quantity's unit, against the unit catalogue
+  generated from the `wmoop.core/Unit` individuals (`maxSpeed` takes `m/s` as well as `km/h`, never
+  `kg`; `Quantity.In` / `Quantity.in_` converts within a kind); and the simple invariants,
+  `self.<property> <op> <literal>` joined by `and`. Richer invariants wait for WMX (ADR 0002) and are
+  listed in a comment on their class;
 - the role machinery: every entity can play roles by composition, and a role refuses a subject that
-  is not its `played_by` type;
+  is not its `played_by` type, or one that already holds as many roles of its type as
+  `cardinality_per_player` allows;
 - errors that carry their code from the model's error-code registry
   ([`conformance/error-codes.yaml`](https://github.com/WMOOP/wmoop.doc/blob/main/conformance/error-codes.yaml)
   in `wmoop.doc`), e.g. `WM-ROLE-PLAYER-MISMATCH`: `WmoopError.code` in Python, `IWmoopError.Code`
   in C#. They still derive from the built-in exceptions (`ValueError`, `ArgumentException`, ...), and
-  the code, not the exception type, is what the conformance vectors compare.
+  the code, not the exception type, is what the conformance vectors compare. A unit of another
+  dimension is `WM-UNIT-DIMENSION-MISMATCH`, one of the same dimension but another kind (Angle for a
+  Count) `WM-QUANTITYKIND-MISMATCH`, a broken invariant `WM-INVARIANT-FAILED` and a role over its
+  `cardinality_per_player` `WM-ROLE-DUPLICATE`.
 
 **Behaviour is hand-written**: algorithms like `can_drive` or `describe`, visitors, strategies and
 specifications. This is the *generation gap* from
@@ -132,7 +143,7 @@ wmoop.tools/
 │   │   ├── common.py      # module paths, cardinalities, type resolution, the banner
 │   │   ├── python_gen.py  # -> the `wmoop` namespace package, one module per domain
 │   │   └── csharp_gen.py  # -> one Wmoop.<Domain> project per domain, partial classes
-│   └── templates/         # the runtime kernels, emitted verbatim (ConceptId, Quantity, Entity, Role, errors)
+│   └── templates/         # the runtime kernels (ConceptId, Quantity, Units, Entity, Role, errors)
 ├── tools/regen_binding.py # regenerate / verify a binding repo's generated/ (drift gate)
 ├── external/wmoop.doc/    # git submodule: the pinned canonical model
 ├── tests/test_conformance.py
@@ -167,7 +178,9 @@ the hooks with `pre-commit install && pre-commit install --hook-type commit-msg`
 - More targets: Java, C++.
 - A canonical compiled form (`wm.json`, JCS-normalized) + content hashing, per the architecture spec.
 - A language-neutral **conformance suite** (golden cases) every binding must pass.
-- Richer validation: provenance presence, naming rules, unit/dimension checks.
+- Richer validation: provenance presence, naming rules.
+- The rest of the model in the bindings: `property_overrides` and datatype constraints (the Moped's
+  50 cm³), interfaces and `capabilities`, schemes, labels, provenance.
 
 ## License
 

@@ -1,4 +1,4 @@
-"""The runtime kernel every generated WMOOP module imports: errors, identity, quantities, roles, extensions.
+"""The runtime kernel every generated WMOOP module imports: errors, identity, quantities and units, roles, extensions.
 
 ``wmoop.core`` re-exports the public names, so a consumer writes ``from wmoop.core import Quantity``.
 """
@@ -61,9 +61,81 @@ class Quantity:
             raise WmoopValueError("WM-UNIT-MISSING", "A Quantity must carry a unit.")
 
     def __str__(self) -> str:
-        v = self.value
-        text = str(int(v)) if isinstance(v, float) and v.is_integer() else str(v)
-        return f"{text} {self.unit}"
+        text = str(self.value)  # the shortest round-trip form: 49, 12.5, 5.97e+24
+        return f"{text.removesuffix('.0')} {self.unit}"
+
+    def in_(self, unit: str) -> float:
+        """This quantity's magnitude in ``unit``, a unit of the same kind: ``Quantity(45, "km/h").in_("m/s")`` is 12.5."""
+        if unit == self.unit:
+            return self.value
+        here, there = _UNITS.get(self.unit), _UNITS.get(unit)
+        if here is None or there is None:
+            raise WmoopValueError(
+                _DIMENSION_MISMATCH, f"Cannot express {self} in {unit}: the unit catalogue does not have both units."
+            )
+        if here[0] != there[0]:
+            raise WmoopValueError(
+                _mismatch(here[0], there[0]),
+                f"Cannot express {self} in {unit}: {_local(here[0])} is not {_local(there[0])}.",
+            )
+        return (self.value * here[1] + here[2] - there[2]) / there[1]
+
+
+_UNITS: dict[str, tuple[str, float, float]] = {}
+"""The unit catalogue, by symbol: (quantity kind, factor, offset), where a value in the unit is
+``factor * value + offset`` in the kind's canonical unit. The generator fills it from the model's
+``wmoop.core/Unit`` individuals (docs/02-meta-model.md §6.4); it stays empty without them."""
+
+_KINDS: dict[str, tuple[int, ...]] = {}
+"""The SI dimension (L, M, T, I, Θ, N, J exponents) of each quantity kind that records one, from the
+model's ``wmoop.core/QuantityKind`` individuals."""
+
+_DIMENSION_MISMATCH = "WM-UNIT-DIMENSION-MISMATCH"
+
+
+def _local(qname: str) -> str:
+    return qname.rpartition("/")[2]
+
+
+def _mismatch(kind: str, expected: str) -> str:
+    """The code for a quantity of ``kind`` met where ``expected`` is: a different SI dimension, or the
+    same dimension but another kind (Angle and Count are both dimensionless)."""
+    here, there = _KINDS.get(kind), _KINDS.get(expected)
+    return "WM-QUANTITYKIND-MISMATCH" if here is not None and here == there else _DIMENSION_MISMATCH
+
+
+def unit_kind(symbol: str) -> str | None:
+    """The quantity kind ``symbol`` measures, e.g. ``wmoop.core/Speed`` for ``km/h``; None if it is not in the catalogue."""
+    entry = _UNITS.get(symbol)
+    return entry[0] if entry else None
+
+
+def check_quantity(value: object, unit: str, kind: str, member: str) -> Quantity:
+    """``value``, when a property declared in ``unit``, of quantity kind ``kind``, may hold it.
+
+    Any catalogue unit of that kind is accepted and kept as given (``m/s`` for a speed in ``km/h``).
+    ``kind`` is empty when the model does not say, and then only ``unit`` itself is.
+    """
+    if not isinstance(value, Quantity):
+        raise WmoopTypeError(
+            "WM-TYPE-MISMATCH", f"{member} is a quantity in {unit}, not {type(value).__name__} {value!r}."
+        )
+    if value.unit == unit:
+        return value
+    if not kind:
+        raise WmoopValueError(_DIMENSION_MISMATCH, f"{member} must be in {unit}, not in {value.unit}.")
+    measures = unit_kind(value.unit)
+    if measures is None:
+        raise WmoopValueError(
+            _DIMENSION_MISMATCH,
+            f"{member} must be in {unit} or another {_local(kind)} unit; {value.unit} is not in the unit catalogue.",
+        )
+    if measures != kind:
+        raise WmoopValueError(
+            _mismatch(measures, kind),
+            f"{member} must be in {unit} or another {_local(kind)} unit; {value.unit} measures {_local(measures)}.",
+        )
+    return value
 
 
 R = TypeVar("R", bound="Role")
@@ -106,12 +178,22 @@ class Entity:
         return any(vars(k).get("WM_ID") == qname for k in type(self).__mro__)
 
     def add_role(self, role: R) -> R:
-        """Attach ``role`` by composition; the role's ``played_by`` type must be one of this entity's types."""
+        """Attach ``role`` by composition; the role's ``played_by`` type must be one of this entity's types,
+        and this entity may not already hold as many roles of its type as ``cardinality_per_player`` allows."""
         played_by = type(role).WM_PLAYED_BY
         if played_by and not self.is_a(played_by):
             raise WmoopTypeError(
                 "WM-ROLE-PLAYER-MISMATCH",
                 f"{type(role).__name__} is played by {played_by}, which {type(self).__name__} is not.",
+            )
+        if role.subject is not None:
+            raise WmoopStateError("WM-ROLE-ALREADY-ATTACHED", "Role is already attached to a subject.")
+        limit = type(role).WM_MAX_PER_PLAYER
+        if limit is not None and sum(type(r).WM_ID == type(role).WM_ID for r in self._wm_roles) >= limit:
+            raise WmoopStateError(
+                "WM-ROLE-DUPLICATE",
+                f"{type(self).__name__} already plays {limit} {type(role).__name__} role(s), "
+                "the most its cardinality_per_player allows.",
             )
         role._wm_attach(self)
         self._wm_roles.append(role)
@@ -135,6 +217,7 @@ class Role:
 
     WM_ID = ""
     WM_PLAYED_BY = ""
+    WM_MAX_PER_PLAYER: int | None = None  # cardinality_per_player: the most roles of this type one entity holds
 
     def __init__(self) -> None:
         self._wm_subject: Entity | None = None

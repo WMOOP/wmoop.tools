@@ -13,6 +13,7 @@ roles:
     name: Citizen
     played_by: wmoop.animals/Person
     context: wmoop.society
+    cardinality_per_player: "0..1" # a person holds at most one Citizen role
     definition: A person recognised as a member of a state.
     properties:
       - id: wmoop.society/Citizen#citizenId

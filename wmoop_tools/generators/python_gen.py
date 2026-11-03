@@ -2,7 +2,8 @@
 
 Layout under ``out_dir`` (a binding's ``generated/``)::
 
-    wmoop/_kernel.py      errors, identity, quantities, roles and the extension hook (from templates/python)
+    wmoop/_kernel.py      errors, identity, quantities, roles and the extension hook (from templates/python),
+                          plus the model's unit catalogue
     wmoop/core.py         the wmoop.core module, plus the kernel's public names
     wmoop/<domain>.py     one per WML module, e.g. wmoop/transport.py
 
@@ -13,6 +14,10 @@ Names follow docs/03-architecture.md §4.2: ``wmoop.transport.Moped``, ``wheel_c
 takes ``id`` and ``name``, then every property as a keyword argument, so reordering properties in the
 model never breaks a caller. Required slots have no default; an optional slot defaults to ``None``,
 never to a value that would read as a fact.
+
+The constructor checks what the model states: a quantity's unit is of the property's kind, and the
+simple invariants (``self.<property> <op> <literal>``) hold. The model's individuals are instances on
+the class they instantiate, e.g. ``wmoop.space.Planet.Earth`` or ``wmoop.core.Unit.Kilometre``.
 
 Behaviour is not generated. Each class lists ``<Name>Ext`` from ``wmoop_ext.<domain>`` first among its
 bases when the binding defines one (the Python generation gap, PATTERNS.md §3.3)::
@@ -33,17 +38,26 @@ import os
 from ..compile import ModelError, all_properties, inherited_properties, topo_concepts
 from .common import (
     CORE_MODULE,
+    Clause,
     TypeRef,
     banner,
     cardinality,
+    individual_class,
+    individual_values,
+    invariants,
+    kind_dimensions,
     local,
+    max_per_player,
+    module_individuals,
     module_of,
     module_path,
+    quantity_kind,
     referenced_modules,
     relation_ends,
     resolve_type,
     snake,
     template,
+    unit_catalog,
     write,
 )
 
@@ -52,7 +66,8 @@ _KERNEL_MEMBERS = frozenset({"id", "name", "roles", "is_a", "add_role", "has_rol
 _PRIMITIVE = {"string": "str", "integer": "int", "decimal": "float", "boolean": "bool", "date": "datetime.date"}
 _KERNEL_IMPORT = (
     "from wmoop._kernel import (  # noqa: F401\n"
-    "    ConceptId, Entity, Many, One, Quantity, Role, WmoopError, WmoopStateError, WmoopTypeError, WmoopValueError, ext,\n"
+    "    ConceptId, Entity, Many, One, Quantity, Role, WmoopError, WmoopStateError, WmoopTypeError, WmoopValueError,\n"
+    "    check_quantity, ext,\n"
     ")"
 )
 _EXT_HINT = "Add behaviour as a mixin <Name>Ext in wmoop_ext.{module} (see wmoop_tools/generators/python_gen.py)."
@@ -96,8 +111,10 @@ def _annotation(t: TypeRef, here: str) -> str:
     return _type_name(t.target, t.module, here)
 
 
-def _default_literal(p) -> str:
+def _default_literal(wm, p) -> str:
     d = p.default
+    if isinstance(d, (int, float)) and not isinstance(d, bool) and resolve_type(wm, p).kind == "quantity":
+        return f"Quantity({d!r}, {p.unit!r})"
     if isinstance(d, (bool, int, float, str)):
         return repr(d)
     raise ModelError(f"{p.id}: unsupported default {d!r} (use a boolean, number or string)")
@@ -110,7 +127,7 @@ def _param(wm, p, here: str) -> str:
     if card.many:
         return f"{name}: Iterable[{ann}]" + ("" if card.required else " = ()")
     if p.default is not None:
-        return f"{name}: {ann} = {_default_literal(p)}"
+        return f"{name}: {ann} = {_default_literal(wm, p)}"
     if card.required:
         return f"{name}: {ann}"
     return f"{name}: {ann} | None = None"
@@ -122,8 +139,15 @@ def _store(wm, p, here: str) -> list[str]:
     name = prop_name(p)
     attr = f"self._wm_{name}"
     enum = _annotation(t, here) if t.kind == "enum" else None
+    converts = enum is not None or t.kind == "quantity"
+
+    def convert(v: str) -> str:
+        if t.kind == "quantity":  # the unit must be of the property's kind
+            return f"check_quantity({v}, {p.unit!r}, {quantity_kind(wm, p)!r}, {name!r})"
+        return f"{enum}({v})" if enum else v
+
     if card.many:
-        items = f"tuple({enum}(v) for v in {name})" if enum else f"tuple({name})"
+        items = f"tuple({convert('v')} for v in {name})" if converts else f"tuple({name})"
         lines = [f"        {attr} = {items}"]
         if card.required:
             lines += [
@@ -137,13 +161,43 @@ def _store(wm, p, here: str) -> list[str]:
             f"        if {name} is None:",
             f'            raise WmoopValueError("WM-REQUIRED-MISSING", "{name} is required.")',
         ]
-    if enum and (card.required or p.default is not None):
-        value = f"{enum}({name})"
-    elif enum:
-        value = f"None if {name} is None else {enum}({name})"
+    if not converts or card.required or p.default is not None:
+        value = convert(name)
     else:
-        value = name
+        value = f"None if {name} is None else {convert(name)}"
     return [*lines, f"        {attr} = {value}"]
+
+
+def _comparison(c: Clause, subject: str, here: str) -> str:
+    """A clause of a simple invariant as a Python condition on ``subject``."""
+    if c.type.kind == "quantity":
+        return f"{subject}.in_({c.prop.unit!r}) {c.op} {c.text}"
+    if c.type.kind in ("integer", "decimal"):
+        return f"{subject} {c.op} {c.text}"
+    if c.type.kind == "boolean":
+        return f"{subject} {'is' if c.op == '==' else 'is not'} {c.literal!r}"
+    if c.type.kind == "enum":
+        return f"{subject} {c.op} {_type_name(c.type.target, c.type.module, here)}.{ident(str(c.literal))}"
+    return f"{subject} {c.op} {c.literal!r}"
+
+
+def _checks(wm, c, here: str) -> list[str]:
+    """The constructor lines that raise when one of ``c``'s simple invariants does not hold.
+
+    A clause on an absent value holds, as in wmoop.doc's validator: the open world does not know it.
+    """
+    lines = []
+    for check in invariants(wm, c)[0]:
+        for clause in check.clauses:
+            subject = f"self.{prop_name(clause.prop)}"
+            always = cardinality(clause.prop).required and clause.prop.default is None
+            guard = "" if always else f"{subject} is not None and "
+            test = _comparison(clause, subject, here)
+            lines += [
+                f"        if {guard}not ({test}):",
+                f'            raise WmoopValueError("WM-INVARIANT-FAILED", {check.message!r})',
+            ]
+    return lines
 
 
 def _getter(wm, p, here: str) -> list[str]:
@@ -162,7 +216,7 @@ def _getter(wm, p, here: str) -> list[str]:
     ]
 
 
-def _init(wm, here: str, every: list, inherited: list, own: list, *, role: bool) -> list[str]:
+def _init(wm, here: str, every: list, inherited: list, own: list, *, role: bool, checks: list[str]) -> list[str]:
     params = ", ".join(_param(wm, p, here) for p in every)
     head = "self, *" if role else "self, id: ConceptId | str, name: str, *"
     lines = ["", f"    def __init__({head}, {params}) -> None:"]
@@ -173,7 +227,7 @@ def _init(wm, here: str, every: list, inherited: list, own: list, *, role: bool)
         lines.append(f"        super().__init__(id, name{passed})")
     for p in own:
         lines += _store(wm, p, here)
-    return lines
+    return lines + checks
 
 
 def _emit_enum(e) -> list[str]:
@@ -204,8 +258,8 @@ def _relations(wm, holder, here: str) -> list[str]:
     return ["", *lines] if lines else []
 
 
-def _emit_concept(wm, c, here: str) -> list[str]:
-    name = local(c.id)
+def _emit_concept(wm, c, m) -> list[str]:
+    here, name = m.id, local(c.id)
     base = _type_name(c.extends, wm.concepts[c.extends].module, here) if c.extends else "Entity"
     lines = [
         f"class {name}(*ext({dotted(here)!r}, {name!r}), {base}):",
@@ -213,10 +267,20 @@ def _emit_concept(wm, c, here: str) -> list[str]:
         "",
         f"    WM_ID = {c.id!r}",
         f"    WM_KIND = {c.kind!r}",
-        *_relations(wm, c, here),
     ]
-    if c.properties:
-        lines += _init(wm, here, all_properties(wm, c), inherited_properties(wm, c), c.properties, role=False)
+    instances = [i for i in m.individuals if i.instance_of == c.id]
+    if instances:
+        lines += ["", "    # The model's individuals of this class, set at the end of the module."]
+        lines += [f"    {ident(local(i.id))}: ClassVar[{name}]" for i in instances]
+    pending = invariants(wm, c)[1]
+    if pending:
+        lines.append("")
+        lines += [f"    # Invariant {i.id} waits for WMX (ADR 0002): {' '.join(i.expr.split())}" for i in pending]
+    lines += _relations(wm, c, here)
+    checks = _checks(wm, c, here)
+    if c.properties or checks:
+        every, inherited = all_properties(wm, c), inherited_properties(wm, c)
+        lines += _init(wm, here, every, inherited, c.properties, role=False, checks=checks)
         for p in c.properties:
             lines += _getter(wm, p, here)
     return [*lines, "", ""]
@@ -230,13 +294,51 @@ def _emit_role(wm, r, here: str) -> list[str]:
         "",
         f"    WM_ID = {r.id!r}",
         f"    WM_PLAYED_BY = {(r.played_by or '')!r}",
-        *_relations(wm, r, here),
     ]
+    limit = max_per_player(r)
+    if limit is not None:
+        lines.append(f"    WM_MAX_PER_PLAYER = {limit}")
+    lines += _relations(wm, r, here)
     if r.properties:
-        lines += _init(wm, here, r.properties, [], r.properties, role=True)
+        lines += _init(wm, here, r.properties, [], r.properties, role=True, checks=[])
         for p in r.properties:
             lines += _getter(wm, p, here)
     return [*lines, "", ""]
+
+
+def _value(wm, v, here: str) -> str:
+    """One of an individual's values as a Python expression."""
+    t = v.type
+    items = []
+    for x in v.items:
+        if t.kind == "quantity":
+            items.append(f"Quantity({x!r}, {v.prop.unit!r})")
+        elif t.kind == "date":
+            items.append(f"datetime.date({x.year}, {x.month}, {x.day})")
+        elif t.kind == "enum":
+            items.append(f"{_type_name(t.target, t.module, here)}.{ident(x)}")
+        elif t.kind == "concept":
+            cls = individual_class(wm, wm.individuals[x]).id
+            items.append(f"{_type_name(cls, module_of(wm, cls), here)}.{ident(local(x))}")
+        else:
+            items.append(repr(x))
+    if not v.many:
+        return items[0]
+    return "(" + ", ".join(items) + ("," if len(items) == 1 else "") + ")"
+
+
+def _emit_individuals(wm, m) -> list[str]:
+    """``<Class>.<Individual> = <Class>(...)`` for every individual of the module."""
+    lines = []
+    for ind in module_individuals(wm, m):
+        cls = local(individual_class(wm, ind).id)
+        if ind.definition:
+            lines.append(f"# {' '.join(ind.definition.split())}")
+        lines.append(f"{cls}.{ident(local(ind.id))} = {cls}(")
+        lines += [f"    {ind.id!r},", f"    {ind.name!r},"]
+        lines += [f"    {prop_name(v.prop)}={_value(wm, v, m.id)}," for v in individual_values(wm, ind)]
+        lines += [")", ""]
+    return ["# --- Individuals: the model's reference instances (L2) ---", "", *lines] if lines else []
 
 
 def _uses(wm, module, kinds: set[str]) -> bool:
@@ -245,7 +347,7 @@ def _uses(wm, module, kinds: set[str]) -> bool:
             t, card = resolve_type(wm, p), cardinality(p)
             if t.kind in kinds or ("list" in kinds and card.many):
                 return True
-    return False
+    return any(v.type.kind in kinds for ind in module.individuals for v in individual_values(wm, ind))
 
 
 def _module_source(wm, m) -> str:
@@ -258,6 +360,8 @@ def _module_source(wm, m) -> str:
         head.append("from collections.abc import Iterable")
     if m.enumerations:
         head.append("from enum import Enum")
+    if m.individuals:
+        head.append("from typing import ClassVar")
     head.append("")
     for other in referenced_modules(wm, m):
         head.append(f"import wmoop.{dotted(other)} as {_alias(other)}")
@@ -266,10 +370,37 @@ def _module_source(wm, m) -> str:
     for e in m.enumerations:
         body += _emit_enum(e)
     for c in topo_concepts(m, wm):
-        body += _emit_concept(wm, c, here)
+        body += _emit_concept(wm, c, m)
     for r in m.roles:
         body += _emit_role(wm, r, here)
+    body += _emit_individuals(wm, m)
     return "\n".join(head + body).rstrip() + "\n"
+
+
+def _kernel_source(wm) -> str:
+    """The kernel template, then the model's unit catalogue for ``check_quantity`` and ``Quantity.in_``."""
+    lines = [banner("#"), template("python", "_kernel.py").rstrip()]
+    units, kinds = unit_catalog(wm), kind_dimensions(wm)
+    if units:
+        lines += [
+            "",
+            "",
+            "# The model's unit catalogue: every wmoop.core/Unit individual, by symbol.",
+            "_UNITS.update(",
+            "    {",
+        ]
+        lines += [f"        {u.symbol!r}: ({u.kind!r}, {u.factor!r}, {u.offset!r})," for u in units]
+        lines += ["    }", ")"]
+    if kinds:
+        lines += [
+            "",
+            "# The SI dimension of every wmoop.core/QuantityKind individual that records one.",
+            "_KINDS.update(",
+            "    {",
+        ]
+        lines += [f"        {kind!r}: {dimension!r}," for kind, dimension in kinds.items()]
+        lines += ["    }", ")"]
+    return "\n".join(lines)
 
 
 def generate_python(wm, out_dir: str) -> list:
@@ -277,7 +408,7 @@ def generate_python(wm, out_dir: str) -> list:
     if nested:
         raise ModelError(f"nested modules are not supported by the Python generator yet: {', '.join(nested)}")
     pkg = os.path.join(out_dir, "wmoop")
-    written = [write(os.path.join(pkg, "_kernel.py"), banner("#") + "\n" + template("python", "_kernel.py"))]
+    written = [write(os.path.join(pkg, "_kernel.py"), _kernel_source(wm))]
     for m in wm.modules.values():
         written.append(write(os.path.join(pkg, dotted(m.id) + ".py"), _module_source(wm, m)))
     if CORE_MODULE not in wm.modules:

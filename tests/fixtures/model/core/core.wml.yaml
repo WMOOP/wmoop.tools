@@ -1,0 +1,80 @@
+# A small wmoop.core: the QuantityKind / Unit catalogue the generators check quantities against.
+# Mirrors the shape of the canonical catalogue (wmoop.doc model/core) with a few kinds and units.
+# Count and Angle share a dimension (none), so a unit of one where the other is expected is a
+# WM-QUANTITYKIND-MISMATCH, not a WM-UNIT-DIMENSION-MISMATCH.
+module:
+  id: wmoop.core
+  version: 1.0.0
+  title: Core
+
+concepts:
+  - id: wmoop.core/QuantityKind
+    name: QuantityKind
+    kind: concrete
+    definition: A kind of measurable quantity, with the exponents of its SI dimension (only L, M and Θ here).
+    properties:
+      - id: wmoop.core/QuantityKind#dimL
+        name: dimL
+        type: integer
+        cardinality: "1"
+        default: 0
+        definition: Exponent of Length.
+      - id: wmoop.core/QuantityKind#dimM
+        name: dimM
+        type: integer
+        cardinality: "1"
+        default: 0
+        definition: Exponent of Mass.
+      - id: wmoop.core/QuantityKind#dimTheta
+        name: dimTheta
+        type: integer
+        cardinality: "1"
+        default: 0
+        definition: Exponent of Temperature.
+      - id: wmoop.core/QuantityKind#canonicalUnit
+        name: canonicalUnit
+        type: string
+        cardinality: "1"
+        definition: The QName of the unit this kind's magnitudes reduce to.
+
+  - id: wmoop.core/Unit
+    name: Unit
+    kind: concrete
+    definition: A unit of measurement; canonical = factor * value + offset.
+    properties:
+      - id: wmoop.core/Unit#symbol
+        name: symbol
+        type: string
+        cardinality: "1"
+        definition: The symbol used in `unit:` fields.
+      - id: wmoop.core/Unit#quantityKind
+        name: quantityKind
+        type: string
+        cardinality: "1"
+        definition: The QName of the QuantityKind the unit measures.
+      - id: wmoop.core/Unit#factor
+        name: factor
+        type: decimal
+        cardinality: "1"
+        default: 1
+        definition: Multiplicative factor to the canonical unit.
+      - id: wmoop.core/Unit#offset
+        name: offset
+        type: decimal
+        cardinality: "1"
+        default: 0
+        definition: Additive offset to the canonical unit.
+
+individuals:
+  - { id: wmoop.core/Mass, name: Mass, instance_of: wmoop.core/QuantityKind, values: { dimM: 1, canonicalUnit: wmoop.core/Kilogram } }
+  - { id: wmoop.core/Length, name: Length, instance_of: wmoop.core/QuantityKind, values: { dimL: 1, canonicalUnit: wmoop.core/Metre } }
+  - { id: wmoop.core/Temperature, name: Temperature, instance_of: wmoop.core/QuantityKind, values: { dimTheta: 1, canonicalUnit: wmoop.core/Kelvin } }
+  - { id: wmoop.core/Count, name: Count, instance_of: wmoop.core/QuantityKind, values: { canonicalUnit: wmoop.core/One } }
+  - { id: wmoop.core/Angle, name: Angle, instance_of: wmoop.core/QuantityKind, values: { canonicalUnit: wmoop.core/Radian } }
+  - { id: wmoop.core/Kilogram, name: kg, instance_of: wmoop.core/Unit, values: { symbol: kg, quantityKind: wmoop.core/Mass } }
+  - { id: wmoop.core/Gram, name: g, instance_of: wmoop.core/Unit, values: { symbol: g, quantityKind: wmoop.core/Mass, factor: 0.001 } }
+  - { id: wmoop.core/Metre, name: m, instance_of: wmoop.core/Unit, values: { symbol: m, quantityKind: wmoop.core/Length } }
+  - { id: wmoop.core/Kelvin, name: K, instance_of: wmoop.core/Unit, values: { symbol: K, quantityKind: wmoop.core/Temperature } }
+  - { id: wmoop.core/DegreeCelsius, name: degC, instance_of: wmoop.core/Unit, values: { symbol: degC, quantityKind: wmoop.core/Temperature, offset: 273.15 } }
+  - { id: wmoop.core/One, name: one, instance_of: wmoop.core/Unit, values: { symbol: one, quantityKind: wmoop.core/Count } }
+  - { id: wmoop.core/Radian, name: rad, instance_of: wmoop.core/Unit, values: { symbol: rad, quantityKind: wmoop.core/Angle } }

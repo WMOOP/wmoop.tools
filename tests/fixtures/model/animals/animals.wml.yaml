@@ -3,6 +3,7 @@ module:
   version: 1.0.0
   title: Animals
   depends_on:
+    - module: wmoop.core
     - module: wmoop.base
 
 enumerations:
@@ -26,8 +27,15 @@ concepts:
         definition: Number of legs.
       - id: wmoop.animals/Animal#mass
         name: mass
+        type: wmoop.core/Mass
         unit: kg
         definition: Body mass.
+    invariants:
+      - id: legs-nonneg
+        expr: "self.legCount >= 0"
+        message: "An animal cannot have a negative number of legs."
+      - id: positive-mass
+        expr: "self.mass > 0"
 
   - id: wmoop.animals/Mammal
     name: Mammal
@@ -58,3 +66,16 @@ concepts:
         cardinality: "0..*"
         inverse: wmoop.animals/Person#knownBy
         definition: People this person knows.
+    invariants:
+      - id: two-legs-at-most # narrows Animal#legCount, so the C# property is overridden here
+        expr: "self.legCount <= 2"
+        message: "A person has at most two legs."
+      - id: knows-everyone # not a simple invariant: it waits for WMX
+        expr: "forall p in self.knows: p.knows contains self"
+
+individuals:
+  - id: wmoop.animals/Ada
+    name: Ada Lovelace
+    instance_of: wmoop.animals/Person
+    definition: A mathematician, the first to publish an algorithm for a computing machine.
+    values: { label: person, fullName: Augusta Ada King, legCount: 2, mass: 55, sex: female, dateOfBirth: 1815-12-10 }

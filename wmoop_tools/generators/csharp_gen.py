@@ -3,8 +3,9 @@
 Layout under ``out_dir`` (a binding's ``generated/``)::
 
     Wmoop.Generated.sln               every project below, so a new module builds with no manual edit
-    Wmoop.Core/Wmoop.Core.csproj      the kernel (ConceptId, Quantity, Entity, Role) + the wmoop.core module
+    Wmoop.Core/Wmoop.Core.csproj      the kernel (ConceptId, Quantity, Units, Entity, Role) + the wmoop.core module
     Wmoop.Core/Kernel.Gen.cs          from templates/csharp/Kernel.cs
+    Wmoop.Core/Units.Gen.cs           the model's unit catalogue, the generated half of the kernel's Units
     Wmoop.Transport/Wmoop.Transport.csproj
     Wmoop.Transport/Moped.Gen.cs      one file per type
     ...
@@ -12,6 +13,11 @@ Layout under ``out_dir`` (a binding's ``generated/``)::
 Names follow docs/03-architecture.md §4.2: ``Wmoop.Transport.Moped``, ``WheelCount``. Objects are built
 with object initializers over ``required`` / ``init`` properties, so reordering properties in the model
 never breaks a caller. An optional slot is nullable, never a default that would read as a fact (§6.5).
+
+An ``init`` accessor checks what the model states: a quantity's unit is of the property's kind, and the
+simple invariants (``self.<property> <op> <literal>``) hold. A subclass whose invariant narrows an
+inherited property overrides it, so that property is ``virtual`` where it is declared. The model's
+individuals are static properties of the class they instantiate, e.g. ``Planet.Earth``, ``Unit.Kilometre``.
 
 Behaviour is not generated. Every type is ``partial`` (docs/03-architecture.md §2.2), and each project
 also compiles ``$(WmoopSourceRoot)/<Project>/**/*.cs``, the hand-written halves, when the binding sets
@@ -24,20 +30,32 @@ import os
 import uuid
 
 from .. import __version__
-from ..compile import ModelError
+from ..compile import ModelError, concept_chain
 from .common import (
     CORE_MODULE,
+    Check,
+    Clause,
     TypeRef,
     banner,
     cardinality,
+    declared_on,
+    individual_class,
+    individual_values,
+    invariants,
+    kind_dimensions,
     local,
+    max_per_player,
+    module_individuals,
     module_of,
     module_path,
+    narrowed,
     pascal,
+    quantity_kind,
     referenced_modules,
     relation_ends,
     resolve_type,
     template,
+    unit_catalog,
     write,
 )
 
@@ -59,6 +77,7 @@ _KERNEL_MEMBERS = frozenset(
         "IsA",
         "RoleType",
         "PlayedBy",
+        "MaxPerPlayer",
         "Subject",
         "WmId",
         "WmPlayedBy",
@@ -68,6 +87,8 @@ _KERNEL_MEMBERS = frozenset(
         "GetType",
     }
 )
+# Names the generated code uses unqualified inside a class, which a static individual must not hide.
+_UNQUALIFIED = frozenset({"Array", "ArgumentException", "DateOnly", "IReadOnlyList", "ReferenceEquals"})
 # Reserved C# keywords cannot be bare identifiers; an enum member `default` is emitted as `@default`.
 _KEYWORDS = frozenset(
     [
@@ -176,6 +197,13 @@ def _xml(text: str | None) -> str:
     return " ".join((text or "").split()).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+def _string(text: str) -> str:
+    """A C# string literal."""
+    escapes = {"\\": "\\\\", '"': '\\"', "\n": "\\n", "\r": "\\r", "\t": "\\t"}
+    body = "".join(escapes.get(ch, f"\\u{ord(ch):04x}" if ord(ch) < 32 else ch) for ch in text)
+    return f'"{body}"'
+
+
 def _type_name(qname: str, module_id: str, here: str) -> str:
     name = local(qname)
     return name if module_id == here else f"global::{project(module_id)}.{name}"
@@ -189,48 +217,124 @@ def _item_type(t: TypeRef, here: str) -> str:
     return _type_name(t.target, t.module, here)
 
 
+def _qualified(qname: str, module_id: str) -> str:
+    """A type in an expression, where a member of the same name (``Sex Sex``) would hide the bare name."""
+    return f"global::{project(module_id)}.{local(qname)}"
+
+
 def _literal(p, t: TypeRef, item: str) -> str:
     d = p.default
     if t.kind == "boolean" and isinstance(d, bool):
         return "true" if d else "false"
     if t.kind in ("integer", "decimal") and isinstance(d, (int, float)) and not isinstance(d, bool):
         return repr(d)
+    if t.kind == "quantity" and isinstance(d, (int, float)) and not isinstance(d, bool):
+        return f"new {item}({d!r}, {_string(p.unit)})"
     if t.kind == "string" and isinstance(d, str):
-        return '"' + d.replace("\\", "\\\\").replace('"', '\\"') + '"'
+        return _string(d)
     if t.kind == "enum" and isinstance(d, str):
-        return f"{item}.{ident(d)}"
+        return f"{_qualified(t.target, t.module)}.{ident(d)}"
     raise ModelError(f"{p.id}: unsupported default {d!r} for a {t.kind} property")
 
 
-def _property(wm, p, owner: str, here: str) -> list[str]:
+def _condition(c: Clause, subject: str) -> str:
+    """A clause of a simple invariant as a C# condition on ``subject``."""
+    if c.type.kind == "quantity":
+        return f"{subject}.In({_string(c.prop.unit or '')}) {c.op} {c.text}"
+    if c.type.kind in ("integer", "decimal"):
+        return f"{subject} {c.op} {c.text}"
+    if c.type.kind == "boolean":
+        return f"{subject} {c.op} {'true' if c.literal else 'false'}"
+    if c.type.kind == "enum":
+        return f"{subject} {c.op} {_qualified(c.type.target, c.type.module)}.{ident(str(c.literal))}"
+    return f"{subject} {c.op} {_string(str(c.literal))}"
+
+
+def _invariant_lines(clauses: list[tuple[Check, Clause]], name: str, nullable: bool) -> list[str]:
+    """``init`` statements that throw when ``value`` breaks a clause; an absent value breaks none (open world)."""
+    lines = []
+    for check, clause in clauses:
+        subject = "value.Value" if nullable and clause.type.kind == "quantity" else "value"
+        test = _condition(clause, subject)
+        lines += [
+            f"            if ({'value is not null && ' if nullable else ''}!({test}))",
+            f'                throw new {_KERNEL}.WmoopArgumentException("WM-INVARIANT-FAILED", {_string(check.message)},'
+            f" nameof({name}));",
+        ]
+    return lines
+
+
+def _shape(wm, p, here: str) -> tuple[TypeRef, str, str, bool, str | None]:
+    """A property's type, C# type, ``required`` modifier, nullability and initial value."""
     t, card = resolve_type(wm, p), cardinality(p)
     item = _item_type(t, here)
+    nullable = not card.many and not card.required and p.default is None
+    typ = f"IReadOnlyList<{item}>" if card.many else f"{item}?" if nullable else item
+    required = "required " if card.required and p.default is None else ""
+    if card.many:
+        initial: str | None = f"Array.Empty<{item}>()"
+    else:
+        initial = _literal(p, t, item) if p.default is not None else None
+    return t, typ, required, nullable, initial
+
+
+def _property(wm, p, owner: str, here: str, clauses: list[tuple[Check, Clause]], virtual: bool) -> list[str]:
+    """A declared property: an auto-property, unless its ``init`` accessor has something to check."""
+    t, typ, required, nullable, initial = _shape(wm, p, here)
+    card = cardinality(p)
     name = member(p, owner)
     doc = f"    /// <summary>{_xml(p.definition or p.name)}</summary>"
-    if card.many:
-        typ = f"IReadOnlyList<{item}>"
-        if not card.required:
-            return ["", doc, f"    public {typ} {name} {{ get; init; }} = Array.Empty<{item}>();"]
-        field = f"_wm{name}"
-        return [
-            "",
-            f"    private {typ} {field} = Array.Empty<{item}>();",
-            "",
-            doc,
-            f"    public required {typ} {name}",
-            "    {",
-            f"        get => {field};",
-            f"        init => {field} = value is {{ Count: > 0 }}",
-            "            ? value",
-            f'            : throw new {_KERNEL}.WmoopArgumentException("WM-CARDINALITY", "{name} needs at least one value.",'
+    head = f"    public {required}{'virtual ' if virtual else ''}{typ} {name}"
+    checks = []
+    if card.many and card.required:
+        checks += [
+            "            if (value is not { Count: > 0 })",
+            f'                throw new {_KERNEL}.WmoopArgumentException("WM-CARDINALITY", "{name} needs at least one value.",'
             f" nameof({name}));",
-            "    }",
         ]
-    if p.default is not None:
-        return ["", doc, f"    public {item} {name} {{ get; init; }} = {_literal(p, t, item)};"]
-    if card.required:
-        return ["", doc, f"    public required {item} {name} {{ get; init; }}"]
-    return ["", doc, f"    public {item}? {name} {{ get; init; }}"]
+    if t.kind == "quantity":  # the unit must be of the property's kind
+        kind = _string(quantity_kind(wm, p))
+        checks.append(f"            {_KERNEL}.Units.Require(value, {_string(p.unit)}, {kind}, nameof({name}));")
+    checks += _invariant_lines(clauses, name, nullable)
+    if not checks:
+        return ["", doc, f"{head} {{ get; init; }}" + (f" = {initial};" if initial else "")]
+    field = f"_wm{name}"
+    return [
+        "",
+        doc,
+        head,
+        "    {",
+        f"        get => {field};",
+        "        init",
+        "        {",
+        *checks,
+        f"            {field} = value;",
+        "        }",
+        "    }",
+        "",
+        f"    private {typ} {field}" + (f" = {initial};" if initial else ";"),
+    ]
+
+
+def _override(wm, c, p, here: str, clauses: list[tuple[Check, Clause]]) -> list[str]:
+    """An inherited property that ``c``'s invariants narrow: the base accessor stores and checks, then ``c``'s checks run."""
+    _, typ, required, nullable, _ = _shape(wm, p, here)
+    name = member(p, local(declared_on(wm, c, p).id))
+    if name == local(c.id):
+        raise ModelError(f"{c.id}: cannot narrow '{p.name}', whose C# name is the class name")
+    return [
+        "",
+        "    /// <inheritdoc/>",
+        f"    public {required}override {typ} {name}",
+        "    {",
+        f"        get => base.{name};",
+        "        init",
+        "        {",
+        f"            base.{name} = value;",
+        *_invariant_lines(clauses, name, nullable),
+        "        }",
+        "    }",
+    ]
 
 
 def _head(m) -> list[str]:
@@ -319,7 +423,74 @@ def _relations(wm, holder, owner: str, here: str) -> list[str]:
     return lines
 
 
-def _concept_source(wm, c, m) -> str:
+def _members(wm, c) -> set[str]:
+    """The member names ``c`` declares or inherits, which a static individual must not reuse."""
+    names = {"WmId"}
+    for anc in concept_chain(wm, c):
+        owner = local(anc.id)
+        names.update(member(p, owner) for p in anc.properties)
+        names.update(member_name(end.name, owner) for end in relation_ends(wm, anc))
+        if anc is not c:
+            names.update(ident(local(i.id)) for i in wm.individuals.values() if i.instance_of == anc.id)
+    return names
+
+
+def _individual_name(wm, ind) -> str:
+    """The static property that holds ``ind`` on its class: its local name, or ``<Name>Individual`` if that is taken."""
+    c = individual_class(wm, ind)
+    name = ident(local(ind.id))
+    taken = _members(wm, c) | _KERNEL_MEMBERS | _UNQUALIFIED | {local(c.id)}
+    return f"{name}Individual" if name in taken else name
+
+
+def _value(wm, v) -> str:
+    """One of an individual's values as a C# expression; types are qualified, since a member may share their name."""
+    t = v.type
+    item = _qualified(t.target, t.module) if t.target else _item_type(t, "")
+    items = []
+    for x in v.items:
+        if t.kind == "quantity":
+            items.append(f"new {item}({x!r}, {_string(v.prop.unit)})")
+        elif t.kind == "boolean":
+            items.append("true" if x else "false")
+        elif t.kind == "string":
+            items.append(_string(x))
+        elif t.kind == "date":
+            items.append(f"new DateOnly({x.year}, {x.month}, {x.day})")
+        elif t.kind == "enum":
+            items.append(f"{item}.{ident(x)}")
+        elif t.kind == "concept":
+            ref = wm.individuals[x]
+            cls = individual_class(wm, ref).id
+            items.append(f"{_qualified(cls, module_of(wm, cls))}.{_individual_name(wm, ref)}")
+        else:  # integer, decimal
+            items.append(repr(x))
+    return f"new {item}[] {{ {', '.join(items)} }}" if v.many else items[0]
+
+
+def _individuals(wm, c, m) -> list[str]:
+    """Static properties holding the model's individuals of ``c``, each after those it refers to:
+    static initializers run in order, so an earlier one would read a later one as null."""
+    name = local(c.id)
+    lines = []
+    for ind in module_individuals(wm, m):
+        if ind.instance_of != c.id:
+            continue
+        lines += [
+            "",
+            f"    /// <summary>{_xml(ind.definition or ind.name)} Individual <c>{ind.id}</c>.</summary>",
+            f"    public static {name} {_individual_name(wm, ind)} {{ get; }} = new()",
+            "    {",
+            f"        Id = {_string(ind.id)},",
+            f"        Name = {_string(ind.name)},",
+        ]
+        for v in individual_values(wm, ind):
+            lines.append(f"        {member(v.prop, local(declared_on(wm, c, v.prop).id))} = {_value(wm, v)},")
+        lines.append("    };")
+    return lines
+
+
+def _concept_source(wm, c, m, virtuals: set[tuple[str, str]]) -> str:
     here, name = m.id, local(c.id)
     base = _type_name(c.extends, wm.concepts[c.extends].module, here) if c.extends else f"{_KERNEL}.Entity"
     kind = "abstract partial class" if c.kind == "abstract" else "partial class"
@@ -331,9 +502,20 @@ def _concept_source(wm, c, m) -> str:
         "{",
         f'    public {hides}const string WmId = "{c.id}";',
     ]
+    checks, pending = invariants(wm, c)
+    if pending:
+        lines.append("")
+        lines += [f"    // Invariant {i.id} waits for WMX (ADR 0002): {' '.join(i.expr.split())}" for i in pending]
+    clauses: dict[str, list[tuple[Check, Clause]]] = {}
+    for check in checks:
+        for clause in check.clauses:
+            clauses.setdefault(clause.prop.name, []).append((check, clause))
     for p in c.properties:
-        lines += _property(wm, p, name, here)
+        lines += _property(wm, p, name, here, clauses.pop(p.name, []), (c.id, p.name) in virtuals)
+    for inherited in clauses.values():  # what is left narrows inherited properties
+        lines += _override(wm, c, inherited[0][1].prop, here, inherited)
     lines += _relations(wm, c, name, here)
+    lines += _individuals(wm, c, m)
     return "\n".join([*lines, "}"])
 
 
@@ -351,10 +533,46 @@ def _role_source(wm, r, m) -> str:
     lines += ["", f"    public override {_KERNEL}.ConceptId RoleType => WmId;"]
     if r.played_by:
         lines.append("    public override string PlayedBy => WmPlayedBy;")
+    limit = max_per_player(r)
+    if limit is not None:
+        lines.append(f"    public override int? MaxPerPlayer => {limit};")
     for p in r.properties:
-        lines += _property(wm, p, name, here)
+        lines += _property(wm, p, name, here, [], False)
     lines += _relations(wm, r, name, here)
     return "\n".join([*lines, "}"])
+
+
+def _units_source(wm, core) -> str:
+    """The generated half of the kernel's ``Units``: the model's unit catalogue and its kinds' dimensions."""
+    lines = [
+        banner("//", core),
+        "#nullable enable",
+        "",
+        "namespace Wmoop.Core;",
+        "",
+        "/// <summary>",
+        '/// The generated half of <see cref="Units"/>: every <c>wmoop.core/Unit</c> individual of the model,',
+        "/// and the SI dimension (L M T I Θ N J) of every <c>wmoop.core/QuantityKind</c> that records one.",
+        "/// </summary>",
+        "public static partial class Units",
+        "{",
+        "    private static partial (string Symbol, string Kind, double Factor, double Offset)[] Catalog() =>",
+        "        new (string, string, double, double)[]",
+        "        {",
+    ]
+    lines += [
+        f"            ({_string(u.symbol)}, {_string(u.kind)}, {u.factor!r}, {u.offset!r})," for u in unit_catalog(wm)
+    ]
+    lines += [
+        "        };",
+        "",
+        "    private static partial (string Kind, string Dimension)[] Dimensions() =>",
+        "        new (string, string)[]",
+        "        {",
+    ]
+    for kind, dimension in kind_dimensions(wm).items():
+        lines.append(f"            ({_string(kind)}, {_string(' '.join(map(str, dimension)))}),")
+    return "\n".join([*lines, "        };", "}"])
 
 
 def _csproj(name: str, version: str, references: list[str], module=None) -> str:
@@ -426,7 +644,9 @@ def generate_csharp(wm, out_dir: str) -> list:
     core = wm.modules.get(CORE_MODULE)
     kernel = os.path.join(out_dir, _KERNEL_PROJECT, "Kernel.Gen.cs")
     written.append(write(kernel, banner("//", core) + "\n" + template("csharp", "Kernel.cs")))
+    written.append(write(os.path.join(out_dir, _KERNEL_PROJECT, "Units.Gen.cs"), _units_source(wm, core)))
     projects = [_KERNEL_PROJECT]
+    virtuals = narrowed(wm)
     if core is None:
         written.append(
             write(
@@ -442,11 +662,13 @@ def generate_csharp(wm, out_dir: str) -> list:
         for e in m.enumerations:
             sources[local(e.id)] = _enum_source(e, m)
         for c in m.concepts:
-            sources[local(c.id)] = _concept_source(wm, c, m)
+            sources[local(c.id)] = _concept_source(wm, c, m, virtuals)
         for r in m.roles:
             sources[local(r.id)] = _role_source(wm, r, m)
         if len(sources) != len(m.enumerations) + len(m.concepts) + len(m.roles):
             raise ModelError(f"{m.id}: two types share a name")
+        if m.id == CORE_MODULE and {"Kernel", "Units"} & set(sources):
+            raise ModelError(f"{m.id}: a type named Kernel or Units would overwrite the kernel's files")
         for type_name, source in sorted(sources.items()):
             written.append(write(os.path.join(folder, f"{type_name}.Gen.cs"), source))
 

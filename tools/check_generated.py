@@ -6,7 +6,9 @@ A generator is only trustworthy if, for a fixed model, it is:
 1. **Deterministic** — running it twice produces byte-identical output. Non-determinism
    (dict ordering, set iteration, timestamps) would make every regeneration a noisy diff.
 2. **Valid** — every emitted Python module imports, and every module has its C# project and
-   sources plus the solution that builds them (CI compiles it with the .NET SDK).
+   sources plus the solution that builds them (CI compiles it with the .NET SDK). Every
+   individual of the model is generated: in Python an instance on its class, built (so checked)
+   when the module loads; in C# a static property of its class.
 
 This script enforces both, for every supported language, without needing the .NET SDK.
 It uses the canonical model pinned at ``external/wmoop.doc`` (or a sibling ``../wmoop.doc``)
@@ -21,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import filecmp
+import json
 import os
 import py_compile
 import subprocess
@@ -32,8 +35,9 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from wmoop_tools.compile import validate  # noqa: E402
-from wmoop_tools.generators.csharp_gen import generate_csharp  # noqa: E402
-from wmoop_tools.generators.python_gen import generate_python  # noqa: E402
+from wmoop_tools.generators.common import local  # noqa: E402
+from wmoop_tools.generators.csharp_gen import generate_csharp, project  # noqa: E402
+from wmoop_tools.generators.python_gen import dotted, generate_python, ident  # noqa: E402
 from wmoop_tools.loader import load_model  # noqa: E402
 
 FIXTURE_MODEL = ROOT / "tests" / "fixtures" / "model"
@@ -102,6 +106,30 @@ def check_python_valid(model) -> list[str]:
     return errors
 
 
+# Reads [id, module, class, attribute] rows and prints the individuals that are not an instance on their class.
+_FIND_INDIVIDUALS = (
+    "import importlib, json, sys\n"
+    "for ident, module, cls, attr in json.load(sys.stdin):\n"
+    "    owner = getattr(importlib.import_module('wmoop.' + module), cls)\n"
+    "    held = getattr(owner, attr, None)\n"
+    "    if not isinstance(held, owner) or str(held.id) != ident:\n"
+    "        print(ident)\n"
+)
+
+
+def check_python_individuals(model) -> list[str]:
+    rows = [[i.id, dotted(i.module), local(i.instance_of), ident(local(i.id))] for i in model.individuals.values()]
+    with tempfile.TemporaryDirectory() as d:
+        generate_python(model, d)
+        proc = subprocess.run(
+            [sys.executable, "-c", _FIND_INDIVIDUALS], cwd=d, input=json.dumps(rows), capture_output=True, text=True
+        )
+    missing = proc.stdout.split()
+    if proc.returncode != 0 or missing:
+        return [f"python: individuals not generated on their class: {missing or proc.stderr.strip()}"]
+    return []
+
+
 def check_csharp_present(model) -> list[str]:
     errors: list[str] = []
     with tempfile.TemporaryDirectory() as d:
@@ -111,6 +139,12 @@ def check_csharp_present(model) -> list[str]:
             errors.append("csharp: missing Wmoop.Generated.sln")
         if not (out / "Wmoop.Core" / "Kernel.Gen.cs").is_file():
             errors.append("csharp: missing the kernel, Wmoop.Core/Kernel.Gen.cs")
+        if not (out / "Wmoop.Core" / "Units.Gen.cs").is_file():
+            errors.append("csharp: missing the unit catalogue, Wmoop.Core/Units.Gen.cs")
+        for ind in model.individuals.values():
+            source = out / project(ind.module) / f"{local(ind.instance_of)}.Gen.cs"
+            if not source.is_file() or f'Id = "{ind.id}",' not in source.read_text(encoding="utf-8"):
+                errors.append(f"csharp: individual {ind.id} is missing from {source.name}")
         for proj in sorted(p for p in out.iterdir() if p.is_dir()):
             if not (proj / f"{proj.name}.csproj").is_file():
                 errors.append(f"csharp: missing {proj.name}/{proj.name}.csproj")
@@ -130,12 +164,16 @@ def main(argv: list[str] | None = None) -> int:
     model_dir = resolve_model(args.model)
     print(f"Using model: {model_dir}")
     model = validate(load_model(str(model_dir)))
-    print(f"Model OK: {len(model.modules)} modules, {len(model.concepts)} concepts, {len(model.roles)} roles.")
+    print(
+        f"Model OK: {len(model.modules)} modules, {len(model.concepts)} concepts, {len(model.roles)} roles, "
+        f"{len(model.individuals)} individuals."
+    )
 
     errors: list[str] = []
     errors += check_determinism(model, generate_python, "python/determinism")
     errors += check_determinism(model, generate_csharp, "csharp/determinism")
     errors += check_python_valid(model)
+    errors += check_python_individuals(model)
     errors += check_csharp_present(model)
 
     if errors:

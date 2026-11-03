@@ -6,15 +6,17 @@ import pytest
 
 from wmoop_tools.compile import (
     MAX_INHERITANCE_DEPTH,
+    QUANTITY_KIND,
+    UNIT,
     ModelError,
     concept_chain,
     inherited_properties,
     validate,
 )
-from wmoop_tools.model import Concept, Module, Relation, Role, WorldModel
+from wmoop_tools.model import Concept, Individual, Module, Property, Relation, Role, WorldModel
 
 
-def _wm(concepts=(), roles=(), modules=()) -> WorldModel:
+def _wm(concepts=(), roles=(), modules=(), individuals=()) -> WorldModel:
     wm = WorldModel()
     for c in concepts:
         wm.concepts[c.id] = c
@@ -22,6 +24,8 @@ def _wm(concepts=(), roles=(), modules=()) -> WorldModel:
         wm.roles[r.id] = r
     for m in modules:
         wm.modules[m.id] = m
+    for i in individuals:
+        wm.individuals[i.id] = i
     return wm
 
 
@@ -114,3 +118,63 @@ def test_relation_inverse_name_is_free_on_the_target():
     two = Relation(id="wmoop.x/A#s", name="s", target="wmoop.x/B", inverse="wmoop.x/B#back")
     with pytest.raises(ModelError, match="clashes"):
         validate(_related(one, two))
+
+
+def _catalogued(*properties: Property, individuals=()) -> WorldModel:
+    """A Book with ``properties``, next to a unit catalogue that knows Mass and Length, and kg."""
+    unit = Concept(
+        id=UNIT,
+        name="Unit",
+        properties=[
+            Property(id=f"{UNIT}#symbol", name="symbol", type="string"),
+            Property(id=f"{UNIT}#quantityKind", name="quantityKind", type="string"),
+        ],
+    )
+    catalogue = [
+        Individual(id="wmoop.core/Mass", name="Mass", instance_of=QUANTITY_KIND),
+        Individual(id="wmoop.core/Length", name="Length", instance_of=QUANTITY_KIND),
+        Individual(
+            id="wmoop.core/Kilogram",
+            name="kg",
+            instance_of=UNIT,
+            values={"symbol": "kg", "quantityKind": "wmoop.core/Mass"},
+        ),
+    ]
+    book = Concept(id="wmoop.x/Book", name="Book", properties=list(properties))
+    return _wm(
+        concepts=[unit, Concept(id=QUANTITY_KIND, name="QuantityKind"), book], individuals=[*catalogue, *individuals]
+    )
+
+
+def test_a_unit_is_in_the_catalogue():
+    with pytest.raises(ModelError, match="unit 'lb' is not in the unit catalogue"):
+        validate(_catalogued(Property(id="wmoop.x/Book#weight", name="weight", type="wmoop.core/Mass", unit="lb")))
+
+
+def test_a_unit_measures_the_property_kind():
+    width = Property(id="wmoop.x/Book#width", name="width", type="wmoop.core/Length", unit="kg")
+    with pytest.raises(ModelError, match=r"unit 'kg' measures wmoop\.core/Mass, not wmoop\.core/Length"):
+        validate(_catalogued(width))
+
+
+def test_a_quantity_kind_needs_a_unit():
+    with pytest.raises(ModelError, match=r"a quantity of kind wmoop\.core/Mass needs a unit"):
+        validate(_catalogued(Property(id="wmoop.x/Book#weight", name="weight", type="wmoop.core/Mass")))
+
+
+def test_an_individual_sets_only_properties_of_its_concept_and_every_required_one():
+    pages = Property(id="wmoop.x/Book#pages", name="pages", type="integer", cardinality="1")
+    ghost = Individual(id="wmoop.x/Ghost", name="Ghost", instance_of="wmoop.x/Nope")
+    odyssey = Individual(id="wmoop.x/Odyssey", name="Odyssey", instance_of="wmoop.x/Book", values={"chapters": 24})
+    with pytest.raises(ModelError) as raised:
+        validate(_catalogued(pages, individuals=[ghost, odyssey]))
+    assert "wmoop.x/Ghost: instance_of unknown concept 'wmoop.x/Nope'" in str(raised.value)
+    assert "wmoop.x/Odyssey: 'chapters' is not a property of 'wmoop.x/Book'" in str(raised.value)
+    assert "wmoop.x/Odyssey: no value for required property 'wmoop.x/Book#pages'" in str(raised.value)
+
+
+def test_an_individual_cannot_instantiate_an_abstract_concept():
+    blob = Individual(id="wmoop.x/Blob", name="Blob", instance_of="wmoop.x/Shape")
+    wm = _wm(concepts=[Concept(id="wmoop.x/Shape", name="Shape", kind="abstract")], individuals=[blob])
+    with pytest.raises(ModelError, match="instantiates abstract concept"):
+        validate(wm)

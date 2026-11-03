@@ -11,7 +11,19 @@ import os
 
 import yaml
 
-from .model import Concept, Datatype, Enumeration, EnumValue, Module, Property, Relation, Role, WorldModel
+from .model import (
+    Concept,
+    Datatype,
+    Enumeration,
+    EnumValue,
+    Individual,
+    Invariant,
+    Module,
+    Property,
+    Relation,
+    Role,
+    WorldModel,
+)
 
 
 def _prop(d: dict) -> Property:
@@ -41,6 +53,10 @@ def _relation(d: dict) -> Relation:
     )
 
 
+def _invariant(d: dict) -> Invariant:
+    return Invariant(id=str(d.get("id", "")), expr=str(d.get("expr", "")), message=d.get("message"))
+
+
 def _concept(d: dict, module_id: str) -> Concept:
     return Concept(
         id=d["id"],
@@ -50,6 +66,7 @@ def _concept(d: dict, module_id: str) -> Concept:
         implements=list(d.get("implements") or []),
         properties=[_prop(p) for p in (d.get("properties") or [])],
         relations=[_relation(r) for r in (d.get("relations") or [])],
+        invariants=[_invariant(i) for i in (d.get("invariants") or [])],
         definition=d.get("definition"),
         module=module_id,
     )
@@ -61,6 +78,7 @@ def _role(d: dict, module_id: str) -> Role:
         name=d.get("name", d["id"].split("/")[-1]),
         played_by=d.get("played_by"),
         context=d.get("context"),
+        cardinality_per_player=str(d.get("cardinality_per_player", "0..*")),
         properties=[_prop(p) for p in (d.get("properties") or [])],
         relations=[_relation(r) for r in (d.get("relations") or [])],
         definition=d.get("definition"),
@@ -82,6 +100,16 @@ def _datatype(d: dict) -> Datatype:
         id=d["id"],
         name=d.get("name", d["id"].split("/")[-1]),
         base=d.get("base"),
+        definition=d.get("definition"),
+    )
+
+
+def _individual(d: dict) -> Individual:
+    return Individual(
+        id=d["id"],
+        name=str(d.get("name", d["id"].split("/")[-1])),
+        instance_of=d.get("instance_of", ""),
+        values=dict(d.get("values") or {}),
         definition=d.get("definition"),
     )
 
@@ -125,6 +153,8 @@ def load_model(model_dir: str) -> WorldModel:
                     module.enumerations.append(_enum(e))
                 for d in doc.get("datatypes") or []:
                     module.datatypes.append(_datatype(d))
+                for i in doc.get("individuals") or []:
+                    module.individuals.append(_individual(i))
         wm.modules[module.id] = module
 
     for m in wm.modules.values():
@@ -140,6 +170,9 @@ def load_model(model_dir: str) -> WorldModel:
         for d in m.datatypes:
             d.module = m.id
             wm.datatypes[d.id] = d
+        for i in m.individuals:
+            i.module = m.id
+            wm.individuals[i.id] = i
     for r in wm.roles.values():
         if r.played_by:
             wm.role_bearing.add(r.played_by)
