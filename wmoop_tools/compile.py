@@ -5,6 +5,9 @@ from __future__ import annotations
 from .model import Concept, WorldModel
 
 MAX_INHERITANCE_DEPTH = 6
+# The wmoop.core concepts whose individuals are the QuantityKind / Unit catalogue (R5).
+QUANTITY_KIND = "wmoop.core/QuantityKind"
+UNIT = "wmoop.core/Unit"
 
 
 class ModelError(Exception):
@@ -45,6 +48,7 @@ def validate(wm: WorldModel) -> WorldModel:
             dfs(mid, [mid])
 
     # Inheritance must be acyclic and shallow (Invariant 3).
+    cyclic = False
     for c in wm.concepts.values():
         seen = set()
         cur = c
@@ -52,6 +56,7 @@ def validate(wm: WorldModel) -> WorldModel:
         while cur and cur.extends:
             if cur.extends in seen:
                 errors.append(f"{c.id}: inheritance cycle")
+                cyclic = True
                 break
             seen.add(cur.extends)
             cur = wm.concepts.get(cur.extends)
@@ -59,6 +64,10 @@ def validate(wm: WorldModel) -> WorldModel:
             if depth > MAX_INHERITANCE_DEPTH:
                 errors.append(f"{c.id}: inheritance depth exceeds {MAX_INHERITANCE_DEPTH}")
                 break
+
+    errors += _unit_errors(wm)
+    if not cyclic:  # both walk the inheritance chain
+        errors += _individual_errors(wm)
 
     if errors:
         raise ModelError("Model validation failed:\n  - " + "\n  - ".join(errors))
@@ -86,6 +95,51 @@ def _relation_errors(wm: WorldModel) -> list[str]:
                 errors.append(f"{r.id}: inverse '{r.inverse}' clashes with a member {on} already has")
             else:
                 members[on].add(name)
+    return errors
+
+
+def _unit_errors(wm: WorldModel) -> list[str]:
+    """R5, once the model has a unit catalogue: a unit is a catalogue symbol, of the slot's QuantityKind."""
+    kinds = {i.id for i in wm.individuals.values() if i.instance_of == QUANTITY_KIND}
+    units = {
+        i.values.get("symbol"): i.values.get("quantityKind") for i in wm.individuals.values() if i.instance_of == UNIT
+    }
+    if not units:
+        return []  # no catalogue (e.g. a model without wmoop.core): units cannot be checked
+    errors: list[str] = []
+    for owner in [*wm.concepts.values(), *wm.roles.values()]:
+        for p in owner.properties:
+            if p.unit is None:
+                if p.type in kinds:
+                    errors.append(f"{p.id}: a quantity of kind {p.type} needs a unit")
+            elif p.unit not in units:
+                errors.append(f"{p.id}: unit '{p.unit}' is not in the unit catalogue")
+            elif p.type in kinds and units[p.unit] != p.type:
+                errors.append(f"{p.id}: unit '{p.unit}' measures {units[p.unit]}, not {p.type}")
+    return errors
+
+
+def _individual_errors(wm: WorldModel) -> list[str]:
+    """An individual instantiates a concrete concept, sets only its properties and every required one."""
+    errors: list[str] = []
+    for ind in wm.individuals.values():
+        c = wm.concepts.get(ind.instance_of)
+        if c is None:
+            errors.append(f"{ind.id}: instance_of unknown concept '{ind.instance_of}'")
+            continue
+        if c.kind == "abstract":
+            errors.append(f"{ind.id}: instantiates abstract concept '{c.id}'")
+        props = {p.name: p for p in all_properties(wm, c)}
+        errors += [
+            f"{ind.id}: '{key}' is not a property of '{c.id}' or its ancestors"
+            for key in ind.values
+            if key not in props
+        ]
+        for name, p in props.items():
+            lower = str(p.cardinality or "0..1").partition("..")[0]
+            required = p.required or (lower.isdigit() and int(lower) >= 1)
+            if required and p.default is None and name not in ind.values:
+                errors.append(f"{ind.id}: no value for required property '{p.id}'")
     return errors
 
 

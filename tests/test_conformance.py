@@ -192,7 +192,56 @@ def checks(wm, transport, nature, geography, core) -> list[tuple[str, bool]]:
             list(moped.owned_by) == [owner] and list(owner.owns) == [moped],
         )
     )
+    results.append(
+        (
+            "cardinality_per_player: a Person holds at most one Driver, any number of Owner roles",
+            _raises(RuntimeError, lambda: ada.add_role(Driver(licence_number="RO-AB-2", licence_categories=["B"])))
+            and ada.add_role(transport.Owner()).subject is ada,
+        )
+    )
+
+    def moped_with(**values):
+        return Moped("wm:x", "x", **({"wheel_count": 2, "engine_displacement": Quantity(49, "cm3")} | values))
+
+    results.append(
+        (
+            "A quantity takes any unit of its kind (maxSpeed in m/s for a property in km/h)",
+            abs(moped_with(max_speed=Quantity(12.5, "m/s")).max_speed.in_("km/h") - 45) < 1e-9,
+        )
+    )
+    results.append(
+        (
+            "A quantity refuses a unit of another kind (maxSpeed in kg, engineDisplacement in km/h)",
+            _raises(ValueError, lambda: moped_with(max_speed=Quantity(45, "kg")))
+            and _raises(ValueError, lambda: moped_with(engine_displacement=Quantity(49, "km/h"))),
+        )
+    )
+    results.append(
+        (
+            "A simple invariant is checked in the constructor (Vehicle wheels-nonneg)",
+            _raises(ValueError, lambda: moped_with(wheel_count=-1)),
+        )
+    )
+    space = importlib.import_module("wmoop.space")
+    results.append(
+        (
+            "Individuals are generated: the Earth, with the model's values in their units",
+            isinstance(space.Planet.Earth, space.Planet)
+            and abs(space.Planet.Earth.equatorial_radius.in_("m") - 6378100) < 1e-6
+            and core.Unit.KilometrePerHour.quantity_kind == "wmoop.core/Speed",
+        )
+    )
+    missing = [i.id for i in wm.individuals.values() if not _generated(i)]
+    results.append((f"Every individual of the model is generated ({len(wm.individuals)})", not missing))
     return results
+
+
+def _generated(individual) -> bool:
+    """The individual is an instance of its class, held on that class under its local name."""
+    module = importlib.import_module("wmoop." + individual.module.partition(".")[2])
+    cls = getattr(module, individual.instance_of.rpartition("/")[2])
+    held = getattr(cls, individual.id.rpartition("/")[2], None)
+    return isinstance(held, cls) and str(held.id) == individual.id
 
 
 def test_conformance():

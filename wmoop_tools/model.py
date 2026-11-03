@@ -55,6 +55,15 @@ class Datatype:
 
 
 @dataclass
+class Invariant:
+    """A concept-level boolean constraint over ``self``, e.g. ``self.wheelCount >= 0``."""
+
+    id: str
+    expr: str
+    message: str | None = None
+
+
+@dataclass
 class Concept:
     id: str
     name: str
@@ -63,6 +72,7 @@ class Concept:
     implements: list = field(default_factory=list)
     properties: list = field(default_factory=list)  # list[Property]
     relations: list = field(default_factory=list)  # list[Relation]
+    invariants: list = field(default_factory=list)  # list[Invariant]
     definition: str | None = None
     module: str | None = None
 
@@ -73,8 +83,21 @@ class Role:
     name: str
     played_by: str | None = None
     context: str | None = None
+    cardinality_per_player: str = "0..*"  # how many roles of this type one player may hold at once
     properties: list = field(default_factory=list)  # list[Property]
     relations: list = field(default_factory=list)  # list[Relation]
+    definition: str | None = None
+    module: str | None = None
+
+
+@dataclass
+class Individual:
+    """An L2 reference instance: a planet, a unit of measure. ``values`` maps property names to values."""
+
+    id: str
+    name: str
+    instance_of: str
+    values: dict = field(default_factory=dict)  # property local name -> value (a list when many-valued)
     definition: str | None = None
     module: str | None = None
 
@@ -89,6 +112,7 @@ class Module:
     roles: list = field(default_factory=list)
     enumerations: list = field(default_factory=list)
     datatypes: list = field(default_factory=list)
+    individuals: list = field(default_factory=list)  # list[Individual]
     dir_name: str = ""
 
 
@@ -99,4 +123,5 @@ class WorldModel:
     roles: dict = field(default_factory=dict)  # id -> Role
     enumerations: dict = field(default_factory=dict)  # id -> Enumeration
     datatypes: dict = field(default_factory=dict)  # id -> Datatype
+    individuals: dict = field(default_factory=dict)  # id -> Individual
     role_bearing: set = field(default_factory=set)  # concept ids that can play roles
