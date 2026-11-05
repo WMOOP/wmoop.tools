@@ -2,7 +2,31 @@
 
 from __future__ import annotations
 
+import shutil
+from pathlib import Path
+
+import pytest
+
+from wmoop_tools.cli import main as cli_main
+from wmoop_tools.compile import ModelError
 from wmoop_tools.loader import load_model
+
+NESTED_MODEL = Path(__file__).parent / "fixtures" / "nested_model"
+WIDGETS_MODULE = (
+    "module:\n  id: wmoop.widgets\n  version: 1.0.0\nconcepts:\n  - {id: wmoop.widgets/Widget, kind: concrete}\n"
+)
+GEAR = "concepts:\n  - {id: wmoop.widgets/Gear, kind: concrete}\n"
+
+
+def _write(path: Path, text: str = GEAR) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+def _nested_copy(tmp_path: Path) -> Path:
+    model = tmp_path / "model"
+    shutil.copytree(NESTED_MODEL, model)
+    return model
 
 
 def test_modules_loaded(world_model):
@@ -31,6 +55,76 @@ def test_underscore_and_dot_dirs_are_skipped(tmp_path):
 
     wm = load_model(str(tmp_path))
     assert set(wm.modules) == {"wmoop.widgets"}
+
+
+def test_nested_model_file_is_an_error():
+    # widgets/parts/parts.wml.yaml passes wmoop.doc's recursive validator, so skipping it
+    # would drop wmoop.widgets/Gear from every binding without a word.
+    with pytest.raises(ModelError) as raised:
+        load_model(str(NESTED_MODEL))
+    message = str(raised.value)
+    assert message.startswith(f"Cannot assign 1 model file(s) under {NESTED_MODEL} to a module:")
+    assert "  - widgets/parts/parts.wml.yaml: nested model folders are not supported yet" in message
+    assert "subfolder of module folder 'widgets/'" in message
+    assert "ADR 0004 (wmoop.doc, governance/adr/0004-model-folders-and-sub-modules.md)" in message
+
+
+def test_nested_file_without_a_top_level_file_is_an_error(tmp_path):
+    # A module folder that holds model files only in subfolders used to be skipped whole.
+    _write(tmp_path / "law" / "criminal" / "criminal.wml.yaml")
+    with pytest.raises(ModelError, match=r"law/criminal/criminal\.wml\.yaml: nested model folders"):
+        load_model(str(tmp_path))
+
+
+def test_every_unassigned_file_is_named(tmp_path):
+    model = _nested_copy(tmp_path)
+    _write(model / "widgets" / "parts" / "springs.wml.yaml")
+    _write(model / "widgets" / "parts" / "small" / "pins.wml.yaml")
+    _write(model / "stray.wml.yaml")
+    with pytest.raises(ModelError) as raised:
+        load_model(str(model))
+    lines = str(raised.value).splitlines()
+    assert lines[0].startswith("Cannot assign 4 model file(s) under")
+    assert [line.split(":")[0] for line in lines[1:5]] == [
+        "  - stray.wml.yaml",
+        "  - widgets/parts/parts.wml.yaml",
+        "  - widgets/parts/small/pins.wml.yaml",
+        "  - widgets/parts/springs.wml.yaml",
+    ]
+    assert lines[1] == "  - stray.wml.yaml: the file is not inside a module folder"
+    assert "ADR 0004" in lines[-1]
+
+
+def test_underscore_and_dot_dirs_are_skipped_at_any_depth(tmp_path):
+    model = _nested_copy(tmp_path)
+    (model / "widgets" / "parts").rename(model / "widgets" / "_parts")
+    _write(model / "widgets" / ".cache" / "parts.wml.yaml")
+    _write(model / "widgets" / "_drafts" / "deeper" / "gear.wml.yaml")
+    _write(model / "_template" / "sub" / "x.wml.yaml")
+
+    wm = load_model(str(model))
+    assert set(wm.modules) == {"wmoop.widgets"}
+    assert set(wm.concepts) == {"wmoop.widgets/Widget"}
+
+
+def test_files_that_are_not_model_files_are_ignored(tmp_path):
+    # wmoop.doc's model/ holds README.md and taxonomy.yaml at its root; a module folder may
+    # hold notes. Only *.wml.yaml files count.
+    _write(tmp_path / "widgets" / "widgets.wml.yaml", WIDGETS_MODULE)
+    _write(tmp_path / "README.md", "# Model\n")
+    _write(tmp_path / "taxonomy.yaml", "clusters: []\n")
+    _write(tmp_path / "widgets" / "notes" / "README.md", "# Notes\n")
+    _write(tmp_path / "widgets" / "notes" / "gear.yaml")
+
+    wm = load_model(str(tmp_path))
+    assert set(wm.modules) == {"wmoop.widgets"}
+
+
+def test_cli_reports_a_nested_model_file(capsys):
+    assert cli_main(["--model", str(NESTED_MODEL), "--check"]) == 2
+    err = capsys.readouterr().err
+    assert "widgets/parts/parts.wml.yaml: nested model folders are not supported yet" in err
+    assert "ADR 0004" in err
 
 
 def test_module_metadata(world_model):

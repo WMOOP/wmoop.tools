@@ -1,0 +1,8 @@
+# A file of wmoop.widgets inside a subfolder of the module folder. The loader must report it
+# instead of skipping it: a skipped file would pass validation yet generate no code for Gear.
+concepts:
+  - id: wmoop.widgets/Gear
+    name: Gear
+    kind: concrete
+    extends: wmoop.widgets/Widget
+    definition: A toothed wheel.
