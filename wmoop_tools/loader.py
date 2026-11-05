@@ -2,15 +2,21 @@
 
 Each top-level folder under the model directory is one module; a module may be split
 across several ``*.wml.yaml`` files (e.g. ``transport.wml.yaml`` + ``roles.wml.yaml``).
+
+The loader reads the whole tree. A ``*.wml.yaml`` that is not directly inside a module
+folder (one in a subfolder of a module, or one directly in the model directory) raises
+:class:`ModelError` instead of being skipped: ``wmoop.doc``'s validator searches the tree
+recursively, so a skipped file would pass validation and yet generate no code.
 """
 
 from __future__ import annotations
 
-import glob
+import fnmatch
 import os
 
 import yaml
 
+from .compile import ModelError
 from .model import (
     Concept,
     Datatype,
@@ -114,22 +120,75 @@ def _individual(d: dict) -> Individual:
     )
 
 
+MODEL_FILE_PATTERN = "*.wml.yaml"
+ADR_0004 = "ADR 0004 (wmoop.doc, governance/adr/0004-model-folders-and-sub-modules.md)"
+
+
+def _is_model_file(name: str) -> bool:
+    # The same match as glob.glob(MODEL_FILE_PATTERN): hidden files are left out, and the
+    # case is ignored where the file system ignores it.
+    return not name.startswith(".") and fnmatch.fnmatch(name, MODEL_FILE_PATTERN)
+
+
+def _raise(exc: OSError) -> None:
+    # os.walk skips a directory it cannot read unless told otherwise; that would drop its files.
+    raise exc
+
+
+def _module_files(model_dir: str) -> dict[str, list[str]]:
+    """Map each module folder name to the paths of its model files, in sorted order.
+
+    Walks the whole tree under ``model_dir``. Only a file directly inside a top-level
+    folder belongs to a module; any other model file raises :class:`ModelError`.
+    """
+    by_module: dict[str, list[str]] = {}
+    unassigned: list[str] = []
+    for dirpath, dirnames, filenames in os.walk(model_dir, onerror=_raise, followlinks=True):
+        # A leading "_" or "." marks a directory that is not part of the model, at any
+        # depth: scaffolding like "_template", or tooling dirs. Skip them so their
+        # placeholder YAML never becomes a module; it would emit uncompilable source
+        # (e.g. `class <Concept>`).
+        dirnames[:] = sorted(d for d in dirnames if not d.startswith(("_", ".")))
+        files = sorted(f for f in filenames if _is_model_file(f))
+        if not files:
+            continue
+        rel = os.path.relpath(dirpath, model_dir)
+        parts = [] if rel == os.curdir else rel.split(os.sep)
+        if len(parts) == 1:
+            by_module[parts[0]] = [os.path.join(dirpath, f) for f in files]
+        else:
+            unassigned += ["/".join([*parts, f]) for f in files]
+    if unassigned:
+        raise ModelError(_unassigned_message(model_dir, sorted(unassigned)))
+    return dict(sorted(by_module.items()))
+
+
+def _unassigned_message(model_dir: str, files: list[str]) -> str:
+    lines = [f"Cannot assign {len(files)} model file(s) under {model_dir} to a module:"]
+    for f in files:
+        if "/" in f:
+            module_dir = f.split("/", 1)[0]
+            lines.append(
+                f"  - {f}: nested model folders are not supported yet "
+                f"(the file is in a subfolder of module folder '{module_dir}/'; see ADR 0004)"
+            )
+        else:
+            lines.append(f"  - {f}: the file is not inside a module folder")
+    lines.append(
+        "A model file must sit directly in its module's folder, <model>/<module>/*.wml.yaml; "
+        "otherwise no binding generates code for it. Folders inside a module and sub-modules are "
+        f"proposed in {ADR_0004} and wait for its ratification."
+    )
+    return "\n".join(lines)
+
+
 def load_model(model_dir: str) -> WorldModel:
     wm = WorldModel()
     model_dir = os.path.abspath(model_dir)
     if not os.path.isdir(model_dir):
         raise FileNotFoundError(f"Model directory not found: {model_dir}")
 
-    # A leading "_" or "." marks a non-module directory (scaffolding like
-    # "_template", or tooling dirs). Skip them so their placeholder YAML never
-    # becomes a module — it would emit uncompilable source (e.g. `class <Concept>`).
-    subdirs = sorted(
-        e for e in os.listdir(model_dir) if os.path.isdir(os.path.join(model_dir, e)) and not e.startswith(("_", "."))
-    )
-    for sub in subdirs:
-        files = sorted(glob.glob(os.path.join(model_dir, sub, "*.wml.yaml")))
-        if not files:
-            continue
+    for sub, files in _module_files(model_dir).items():
         module = Module(id="wmoop." + sub, dir_name=sub)
         for f in files:
             with open(f, encoding="utf-8") as fh:

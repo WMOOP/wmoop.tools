@@ -1,0 +1,13 @@
+# Fixture model for the loader's guard against nested model folders (tests/test_loader.py).
+# widgets/ is a module folder and widgets/parts/ a subfolder of it. Nested model folders
+# are not supported until ADR 0004 is ratified, so loading this model must fail.
+module:
+  id: wmoop.widgets
+  version: 1.0.0
+  title: Widgets
+
+concepts:
+  - id: wmoop.widgets/Widget
+    name: Widget
+    kind: concrete
+    definition: A small mechanical device.
